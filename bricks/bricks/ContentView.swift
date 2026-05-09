@@ -27,6 +27,9 @@ struct ContentView: View {
                 hub.releaseForDeploy()
             }
         }
+        .onReceive(server.hubInput) { text in
+            hub.writeStdin(text)
+        }
     }
 
     // MARK: - Hub row

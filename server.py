@@ -45,6 +45,11 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 log.warning("Non-JSON message from %s: %r", addr, raw)
                 continue
             log.info("Received from %s: %s", addr, msg)
+            if msg.get("type") == "hub_stdout" and not msg.get("data", "").startswith(">"):
+                continue
+            others = connected_clients - {websocket}
+            if others:
+                await asyncio.gather(*(c.send(raw) for c in others))
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:

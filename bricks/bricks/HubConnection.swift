@@ -58,6 +58,16 @@ class HubConnectionManager: NSObject, ObservableObject {
         stopAndDisconnect(peripheral)
     }
 
+    func writeStdin(_ text: String) {
+        guard let peripheral = hub, let char = commandChar else { return }
+        let line = text.hasSuffix("\r\n") ? text : text.hasSuffix("\n") ? text.dropLast() + "\r\n" : text + "\r\n"
+        guard let payload = line.data(using: .utf8) else { return }
+        var data = Data([0x06])
+        data.append(payload)
+        log.info("stdin → hub: \(text)")
+        peripheral.writeValue(data, for: char, type: .withResponse)
+    }
+
     // Called on background / terminate — releases BLE but allows reconnect if the app returns.
     func releaseBLE() {
         guard let peripheral = hub else { return }

@@ -24,6 +24,7 @@ enum ServerConnectionState {
 class ServerConnectionManager: NSObject, ObservableObject {
     @Published var connectionState: ServerConnectionState = .searching
     let commands = PassthroughSubject<String, Never>()
+    let hubInput = PassthroughSubject<String, Never>()
 
     // Slow path (bootstrap only)
     private var browser: NWBrowser?
@@ -250,6 +251,10 @@ class ServerConnectionManager: NSObject, ObservableObject {
         }
         if let type_ = json["type"] as? String, type_ != "hello" {
             commands.send(type_)
+        }
+        if let target = json["target"] as? String, target == "hub",
+           let data = json["data"] as? String {
+            hubInput.send(data)
         }
     }
 
