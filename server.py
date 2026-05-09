@@ -50,6 +50,13 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             others = connected_clients - {websocket}
             if others:
                 await asyncio.gather(*(c.send(raw) for c in others))
+
+            # phone battery state → hub status light
+            if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
+                color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
+                if color:
+                    cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
+                    await asyncio.gather(*(c.send(cmd) for c in connected_clients))
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:

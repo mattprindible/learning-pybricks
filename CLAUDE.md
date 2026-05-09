@@ -50,6 +50,30 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 - Command `0x00` = STOP_USER_PROGRAM
 - Command `0x01` = START_USER_PROGRAM
 
+## Phone hardware protocol
+
+`PhoneHardwareManager` (iOS) publishes phone sensor events to the server as JSON. Events arrive at the server as `phone_hardware` messages and are broadcast to all WebSocket clients.
+
+**Battery** — emitted on server connect and on any change:
+```json
+{"type": "phone_hardware", "sensor": "battery", "level": 0.87, "state": "unplugged"}
+```
+- `level`: 0.0–1.0 (`-1.0` if unknown)
+- `state`: `"charging"` | `"full"` | `"unplugged"` | `"unknown"`
+
+**Adding new phone sensors**: add a method to `PhoneHardwareManager` that calls `events.send(...)` with `type: "phone_hardware"` and a `sensor` key. Wire notifications or timers in `init()`. No server or hub changes needed.
+
+**Composition pattern**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response. Example — battery state drives hub light color:
+```python
+if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
+    color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
+    if color:
+        cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
+        await asyncio.gather(*(c.send(cmd) for c in connected_clients))
+```
+
+**Timing**: `emitCurrentState()` fires when the iOS app connects to the server, so agents always receive an initial snapshot. Subscribe before the iOS app connects, or trigger re-emission via a `{"type": "phone_state"}` command (planned).
+
 ## Key design decisions
 
 **Auto-start via STATUS_REPORT**: On BLE subscribe, the hub sends a STATUS_REPORT. iOS reads the USER_PROGRAM_RUNNING flag and only sends START if the program isn't already running. This avoids a GATT BUSY error (0x81) that would disrupt the notification pipeline.
@@ -62,7 +86,7 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **Bonjour + cached direct URL**: `ServerConnectionManager` uses NWBrowser (Bonjour) only on first launch. Once the server sends its `hello` message containing `ws_url`, iOS caches that URL and uses URLSession WebSocket directly on all subsequent connects.
 
-**iOS as thin BLE bridge**: The iOS app has no business logic — it is a hardware bridge. Hub stdout lines are forwarded to the server verbatim; server messages addressed `target: hub` are forwarded to hub stdin verbatim. All logic lives in `server.py`. The iOS app and hub should rarely need redeployment; only `server.py` and `main.py` change during iteration.
+**iOS as hardware bridge**: The iOS app has no business logic — it is a hardware bridge. Hub stdout lines are forwarded to the server verbatim; server messages addressed `target: hub` are forwarded to hub stdin verbatim. Phone hardware events (battery, and future sensors) are forwarded as `phone_hardware` messages. All logic lives in `server.py`. The iOS app and hub should rarely need redeployment; only `server.py` changes during iteration.
 
 **Hub as hardware wrapper**: `main.py` is a stable device driver, not an application. It exposes the full Pybricks hardware API (motors, sensors, IMU, display, speaker, light) via a colon-delimited stdin/stdout protocol. Hub logic is limited to dispatching commands and reporting results — no decision-making. This means `main.py` rarely needs to change once the command vocabulary is established.
 
@@ -255,8 +279,9 @@ deploy.sh                            Deploy pipeline
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 bricks/bricks/
-  bricksApp.swift                    App entry; owns HubConnectionManager + ServerConnectionManager
+  bricksApp.swift                    App entry; owns HubConnectionManager + ServerConnectionManager + PhoneHardwareManager
   ContentView.swift                  UI; wires hub stdout → server.send() and server commands → hub actions
   HubConnection.swift                CoreBluetooth hub manager
   ServerConnection.swift             WebSocket server manager
+  PhoneHardware.swift                Phone sensor manager — publishes phone_hardware events to server
 ```

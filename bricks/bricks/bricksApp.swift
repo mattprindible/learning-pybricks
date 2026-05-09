@@ -4,6 +4,7 @@ import SwiftUI
 private class AppCoordinator: ObservableObject {
     let hub = HubConnectionManager()
     let server = ServerConnectionManager()
+    let phone = PhoneHardwareManager()
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -17,6 +18,13 @@ private class AppCoordinator: ObservableObject {
             .store(in: &cancellables)
         server.hubInput
             .sink { [weak self] text in self?.hub.writeStdin(text) }
+            .store(in: &cancellables)
+        phone.events
+            .sink { [weak self] payload in self?.server.send(payload) }
+            .store(in: &cancellables)
+        server.$connectionState
+            .filter { $0 == .connected }
+            .sink { [weak self] _ in self?.phone.emitCurrentState() }
             .store(in: &cancellables)
     }
 }
