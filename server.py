@@ -55,6 +55,10 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
     finally:
         connected_clients.discard(websocket)
         log.info("Client disconnected: %s", addr)
+        if connected_clients:
+            stop = json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"})
+            await asyncio.gather(*(c.send(stop) for c in connected_clients.copy()))
+            log.info("Sent safe-state stop to %d remaining client(s)", len(connected_clients))
 
 
 async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

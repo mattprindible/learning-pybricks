@@ -70,13 +70,18 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **`input()` is the only stdin mechanism**: `sys.stdin` is unavailable in Pybricks MicroPython. `input()` works but blocks until `\r\n` arrives and echoes the received line back to stdout at the firmware level. The server filters echoes via the `>` prefix convention (lines not starting with `>` are dropped).
 
+**Safe state on client disconnect**: `server.py` broadcasts `exec:[m.stop() for m in motors.values()]` to all remaining clients whenever any client disconnects. This ensures hardware stops if a controller crashes or exits uncleanly. Control scripts should also send a stop in their `finally` block as a belt-and-suspenders measure.
+
+**`exec()` works in Pybricks MicroPython**: `exec(code, globals())` executes arbitrary Python with full access to the hub's runtime globals. This makes `main.py` a live REPL over WebSocket — new hub behaviours can be sent as code strings without redeploying. Discovered empirically 2026-05-09.
+
 ## Hub command protocol
 
 `main.py` accepts commands via stdin and responds via stdout. Commands are colon-delimited; responses are prefixed with `>`.
 
 **External devices** (port-addressed):
 ```
-motor:PORT:run:SPEED:DURATION_MS  →  >motor:PORT:done:angle=INT
+motor:PORT:run:SPEED              →  >motor:PORT:running          (non-blocking, runs until stopped)
+motor:PORT:run:SPEED:DURATION_MS  →  >motor:PORT:done:angle=INT   (blocking)
 motor:PORT:angle                  →  >motor:PORT:angle=INT
 motor:PORT:stop                   →  >motor:PORT:stopped
 sensor:PORT:distance              →  >sensor:PORT:distance=INT   (2000 = nothing detected)
@@ -115,6 +120,14 @@ hub:light:off            →  >hub:light:done
 >port:X=LABEL      — device on each port (or "none")
 >ready             — hub is accepting commands
 ```
+
+**Exec interface:**
+```
+exec:PYTHON_EXPRESSION  →  any print() output, then >exec:ok or >exec:error:MESSAGE
+```
+`exec` runs arbitrary Python in the hub's global namespace — `hub`, `motors`, `sensors`, `Color`, etc. are all in scope. Use for anything not covered by the structured protocol, or to avoid deploying new hub code for one-off operations.
+
+Multi-output responses: collect lines until `>exec:` prefix appears (that's the terminal marker). Example: `exec:print(">d:" + str(sensors["E"][1].distance()))` emits `>d:288` then `>exec:ok`.
 
 **Errors:** `>error:unknown:ORIGINAL_COMMAND`
 
