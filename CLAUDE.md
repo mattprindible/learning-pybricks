@@ -151,7 +151,7 @@ hub:light:off                     →  >hub:light:done
 - `motor.settings()` — returns (max_voltage_mV,) tuple; e.g. (9000,) = 9 V cap
 - `motor.run_until_stalled(speed)` — runs until motor stalls; useful for finding mechanical limits
 - `sensor.detectable_colors()` — returns tuple of Color constants the color sensor will classify
-- `hub.system.storage(int_key)` / `storage(int_key, value)` / `storage(int_key, None)` — persistent integer-keyed store; read/write/delete. Keys must be integers (not strings).
+- `hub.system.storage(offset, read=N)` / `storage(offset, write=b'...')` — raw persistent byte buffer (flash). First arg is a byte offset, not a key. Read N bytes: returns bytes object. Write: value must be bytes (use `struct.pack`). String values and None are rejected. No delete — overwrite with zeros to clear. Useful for persisting calibration across restarts.
 - `hub.ble.signal_strength(channel)` — requires a BLE observe/broadcast channel to be configured first via `observe_enable()`; not useful standalone
 - `hub.ble.broadcast/observe/observe_enable` — multi-hub communication; unexplored
 
