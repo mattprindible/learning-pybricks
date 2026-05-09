@@ -80,10 +80,14 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **External devices** (port-addressed):
 ```
-motor:PORT:run:SPEED              →  >motor:PORT:running          (non-blocking, runs until stopped)
-motor:PORT:run:SPEED:DURATION_MS  →  >motor:PORT:done:angle=INT   (blocking)
-motor:PORT:angle                  →  >motor:PORT:angle=INT
-motor:PORT:stop                   →  >motor:PORT:stopped
+motor:PORT:run:SPEED                →  >motor:PORT:running          (non-blocking, runs until stopped)
+motor:PORT:run:SPEED:DURATION_MS   →  >motor:PORT:done:angle=INT   (blocking)
+motor:PORT:run_angle:SPEED:ANGLE   →  >motor:PORT:done:angle=INT   (blocking; rotates by ANGLE° from current position; ±1° at 500°/s)
+motor:PORT:run_target:SPEED:ANGLE  →  >motor:PORT:done:angle=INT   (blocking; absolute position; idempotent if already there)
+motor:PORT:reset_angle:N           →  >motor:PORT:angle_reset
+motor:PORT:angle                   →  >motor:PORT:angle=INT
+motor:PORT:speed                   →  >motor:PORT:speed=INT        (reads ~0 for ~400ms after run(); may overshoot by ~10°/s)
+motor:PORT:stop                    →  >motor:PORT:stopped
 sensor:PORT:distance              →  >sensor:PORT:distance=INT   (2000 = nothing detected)
 sensor:PORT:color                 →  >sensor:PORT:color=Color.NAME
 ```

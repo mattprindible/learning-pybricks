@@ -77,8 +77,19 @@ while True:
             m.reset_angle(0)
             m.run_time(speed, duration, wait=True)
             print(">motor:" + port + ":done:angle=" + str(m.angle()))
+        elif action == "run_angle" and len(parts) == 5:
+            m.run_angle(int(parts[3]), int(parts[4]), wait=True)
+            print(">motor:" + port + ":done:angle=" + str(m.angle()))
+        elif action == "run_target" and len(parts) == 5:
+            m.run_target(int(parts[3]), int(parts[4]), wait=True)
+            print(">motor:" + port + ":done:angle=" + str(m.angle()))
+        elif action == "reset_angle" and len(parts) == 4:
+            m.reset_angle(int(parts[3]))
+            print(">motor:" + port + ":angle_reset")
         elif action == "angle":
             print(">motor:" + port + ":angle=" + str(m.angle()))
+        elif action == "speed":
+            print(">motor:" + port + ":speed=" + str(m.speed()))
         elif action == "stop":
             m.stop()
             print(">motor:" + port + ":stopped")
