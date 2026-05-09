@@ -1,7 +1,7 @@
 from pybricks.hubs import InventorHub
 from pybricks.iodevices import PUPDevice
 from pybricks.pupdevices import Motor, UltrasonicSensor, ColorSensor
-from pybricks.parameters import Color, Port, Side
+from pybricks.parameters import Axis, Color, Port, Side
 
 COLORS = {
     "RED": Color.RED, "GREEN": Color.GREEN, "BLUE": Color.BLUE,
@@ -13,6 +13,10 @@ COLORS = {
 SIDES = {
     "TOP": Side.TOP, "BOTTOM": Side.BOTTOM, "LEFT": Side.LEFT,
     "RIGHT": Side.RIGHT, "FRONT": Side.FRONT, "BACK": Side.BACK,
+}
+
+AXES = {
+    "X": Axis.X, "Y": Axis.Y, "Z": Axis.Z,
 }
 
 DEVICE_NAMES = {
@@ -95,6 +99,19 @@ while True:
             print(">motor:" + port + ":angle=" + str(m.angle()))
         elif action == "speed":
             print(">motor:" + port + ":speed=" + str(m.speed()))
+        elif action == "done":
+            print(">motor:" + port + ":done=" + str(m.done()))
+        elif action == "load":
+            print(">motor:" + port + ":load=" + str(m.load()))
+        elif action == "dc" and len(parts) == 4:
+            m.dc(int(parts[3]))
+            print(">motor:" + port + ":running")
+        elif action == "brake":
+            m.brake()
+            print(">motor:" + port + ":braked")
+        elif action == "hold":
+            m.hold()
+            print(">motor:" + port + ":held")
         elif action == "stop":
             m.stop()
             print(">motor:" + port + ":stopped")
@@ -103,10 +120,22 @@ while True:
 
     elif kind == "sensor" and port in sensors:
         stype, dev = sensors[port]
+        action = parts[2] if len(parts) > 2 else ""
         if stype == "sonic":
-            print(">sensor:" + port + ":distance=" + str(dev.distance()))
+            if action == "presence":
+                print(">sensor:" + port + ":presence=" + str(dev.presence()))
+            else:
+                print(">sensor:" + port + ":distance=" + str(dev.distance()))
         elif stype == "color":
-            print(">sensor:" + port + ":color=" + str(dev.color()))
+            if action == "ambient":
+                print(">sensor:" + port + ":ambient=" + str(dev.ambient()))
+            elif action == "reflection":
+                print(">sensor:" + port + ":reflection=" + str(dev.reflection()))
+            elif action == "hsv":
+                c = dev.hsv()
+                print(">sensor:" + port + ":hsv:h=" + str(c.h) + ":s=" + str(c.s) + ":v=" + str(c.v))
+            else:
+                print(">sensor:" + port + ":color=" + str(dev.color()))
 
     elif kind == "hub":
         subsystem = parts[1] if len(parts) > 1 else ""
@@ -119,6 +148,8 @@ while True:
                       ":reset_reason=" + str(info.get("reset_reason", "")) +
                       ":host_connected=" + str(info.get("host_connected_ble", "")) +
                       ":start_type=" + str(info.get("program_start_type", "")))
+            elif action == "name":
+                print(">hub:system:name=" + str(hub.system.name()))
             else:
                 print(">error:unknown:" + cmd)
 
@@ -146,6 +177,15 @@ while True:
                 print(">hub:imu:up=" + str(hub.imu.up()))
             elif action == "stationary":
                 print(">hub:imu:stationary=" + str(hub.imu.stationary()))
+            elif action == "rotation" and len(parts) == 4:
+                axis = AXES.get(parts[3].upper())
+                if axis is not None:
+                    print(">hub:imu:rotation=" + str(hub.imu.rotation(axis)))
+                else:
+                    print(">error:unknown_axis:" + parts[3])
+            elif action == "reset_heading" and len(parts) == 4:
+                hub.imu.reset_heading(float(parts[3]))
+                print(">hub:imu:heading_reset")
             else:
                 print(">error:unknown:" + cmd)
 
@@ -154,6 +194,10 @@ while True:
                 print(">hub:battery:voltage=" + str(hub.battery.voltage()))
             elif action == "current":
                 print(">hub:battery:current=" + str(hub.battery.current()))
+            elif action == "temperature":
+                print(">hub:battery:temperature=" + str(hub.battery.temperature()))
+            elif action == "type":
+                print(">hub:battery:type=" + str(hub.battery.type()))
             else:
                 print(">error:unknown:" + cmd)
 
@@ -212,9 +256,26 @@ while True:
                     print(">hub:light:done")
                 else:
                     print(">error:unknown_color:" + parts[3])
+            elif action == "blink" and len(parts) == 6:
+                color = COLORS.get(parts[3].upper())
+                if color is not None:
+                    hub.light.blink(color, [int(parts[4]), int(parts[5])])
+                    print(">hub:light:done")
+                else:
+                    print(">error:unknown_color:" + parts[3])
             elif action == "off":
                 hub.light.off()
                 print(">hub:light:done")
+            else:
+                print(">error:unknown:" + cmd)
+
+        elif subsystem == "charger":
+            if action == "connected":
+                print(">hub:charger:connected=" + str(hub.charger.connected()))
+            elif action == "current":
+                print(">hub:charger:current=" + str(hub.charger.current()))
+            elif action == "status":
+                print(">hub:charger:status=" + str(hub.charger.status()))
             else:
                 print(">error:unknown:" + cmd)
 

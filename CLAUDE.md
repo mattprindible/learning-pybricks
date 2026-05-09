@@ -87,25 +87,42 @@ motor:PORT:run_target:SPEED:ANGLE  →  >motor:PORT:done:angle=INT   (blocking; 
 motor:PORT:reset_angle:N           →  >motor:PORT:angle_reset
 motor:PORT:angle                   →  >motor:PORT:angle=INT
 motor:PORT:speed                   →  >motor:PORT:speed=INT        (reads ~0 for ~400ms after run(); may overshoot by ~10°/s)
+motor:PORT:done                    →  >motor:PORT:done=True|False  (True when no async operation is running)
+motor:PORT:load                    →  >motor:PORT:load=INT         (mNm; 0 when stopped)
+motor:PORT:dc:POWER                →  >motor:PORT:running          (non-blocking; POWER -100 to 100%; no encoder control)
+motor:PORT:brake                   →  >motor:PORT:braked           (active electrical braking; resists motion)
+motor:PORT:hold                    →  >motor:PORT:held             (PID position hold at current angle)
 motor:PORT:stop                    →  >motor:PORT:stopped
-sensor:PORT:distance              →  >sensor:PORT:distance=INT   (2000 = nothing detected)
-sensor:PORT:color                 →  >sensor:PORT:color=Color.NAME
+sensor:PORT:distance               →  >sensor:PORT:distance=INT    (sonic; 2000 = nothing detected)
+sensor:PORT:presence               →  >sensor:PORT:presence=BOOL   (sonic; True if another Pybricks hub is broadcasting ultrasonically)
+sensor:PORT:color                  →  >sensor:PORT:color=Color.NAME
+sensor:PORT:ambient                →  >sensor:PORT:ambient=FLOAT   (color; ambient light level)
+sensor:PORT:reflection             →  >sensor:PORT:reflection=INT  (color; surface reflectivity 0-100)
+sensor:PORT:hsv                    →  >sensor:PORT:hsv:h=INT:s=INT:v=INT  (color; hue 0-359, saturation 0-100, value 0-100)
 ```
 
 **Hub internals:**
 ```
-hub:imu:ready            →  >hub:imu:ready=True|False  (False until hub sits still ~2s after start)
-hub:imu:tilt             →  >hub:imu:tilt:pitch=FLOAT:roll=FLOAT
-hub:imu:heading          →  >hub:imu:heading=FLOAT
-hub:imu:acceleration     →  >hub:imu:acceleration:x=FLOAT:y=FLOAT:z=FLOAT  (mm/s²; z≈9800 when flat)
-hub:imu:angular_velocity →  >hub:imu:angular_velocity:x=FLOAT:y=FLOAT:z=FLOAT  (deg/s)
-hub:imu:up               →  >hub:imu:up=Side.NAME
-hub:imu:stationary       →  >hub:imu:stationary=True|False  (noisy — can read False even when still)
-hub:battery:voltage      →  >hub:battery:voltage=INT  (mV)
-hub:battery:current      →  >hub:battery:current=INT  (mA)
-hub:buttons:pressed      →  >hub:buttons:pressed=none|BUTTON:BUTTON...
-hub:system:info          →  >hub:system:info:name=STR:reset_reason=INT:host_connected=BOOL:start_type=INT
-hub:ble:version          →  >hub:ble:version=STR
+hub:imu:ready                →  >hub:imu:ready=True|False  (False until hub sits still ~2s after start)
+hub:imu:tilt                 →  >hub:imu:tilt:pitch=FLOAT:roll=FLOAT
+hub:imu:heading              →  >hub:imu:heading=FLOAT
+hub:imu:rotation:AXIS        →  >hub:imu:rotation=FLOAT  (AXIS: X/Y/Z; unbounded cumulative degrees, unlike heading)
+hub:imu:reset_heading:ANGLE  →  >hub:imu:heading_reset   (sets heading reference to ANGLE degrees)
+hub:imu:acceleration         →  >hub:imu:acceleration:x=FLOAT:y=FLOAT:z=FLOAT  (mm/s²; z≈9800 when flat)
+hub:imu:angular_velocity     →  >hub:imu:angular_velocity:x=FLOAT:y=FLOAT:z=FLOAT  (deg/s)
+hub:imu:up                   →  >hub:imu:up=Side.NAME
+hub:imu:stationary           →  >hub:imu:stationary=True|False  (noisy — can read False even when still)
+hub:battery:voltage          →  >hub:battery:voltage=INT         (mV)
+hub:battery:current          →  >hub:battery:current=INT         (mA)
+hub:battery:temperature      →  >hub:battery:temperature=INT     (millidegrees C; divide by 1000 for °C)
+hub:battery:type             →  >hub:battery:type=STR            (e.g. "Li-ion")
+hub:charger:connected        →  >hub:charger:connected=INT       (0 = not connected, 1 = connected)
+hub:charger:current          →  >hub:charger:current=INT         (mA; small residual even when unplugged)
+hub:charger:status           →  >hub:charger:status=INT          (0 = not charging; other values TBD)
+hub:buttons:pressed          →  >hub:buttons:pressed=none|BUTTON:BUTTON...
+hub:system:info              →  >hub:system:info:name=STR:reset_reason=INT:host_connected=BOOL:start_type=INT
+hub:system:name              →  >hub:system:name=STR             (hub's Bluetooth display name)
+hub:ble:version              →  >hub:ble:version=STR
 hub:display:number:N              →  >hub:display:done  (N: -99 to 99)
 hub:display:char:C                →  >hub:display:done
 hub:display:text:STR              →  >hub:display:done  (STR may contain colons)
@@ -116,12 +133,25 @@ hub:display:off                   →  >hub:display:done
 hub:speaker:beep:HZ:MS            →  >hub:speaker:done
 hub:speaker:volume:PCT            →  >hub:speaker:done  (0–100)
 hub:light:on:COLOR                →  >hub:light:done    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/MAGENTA/VIOLET/WHITE/GRAY/BLACK)
+hub:light:blink:COLOR:ON_MS:OFF_MS →  >hub:light:done   (non-blocking, loops until on/off called)
 hub:light:off                     →  >hub:light:done
 ```
 
-**Display exec-only capabilities** (not in structured protocol):
+**Exec-only capabilities** (not in structured protocol):
 - `hub.display.icon(Matrix([[...], ...]))` — display a custom 5x5 image; import `Matrix` from `pybricks.tools`
-- `hub.display.animate(images, interval=MS)` — ⚠️ loops forever, permanently blocks the command loop; do not call from exec() without a way to stop the hub program externally
+- `hub.display.animate(images, interval=MS)` — ⚠️ loops forever, permanently blocks the command loop
+- `hub.light.animate(colors, interval=MS)` — non-blocking (unlike display.animate); loops until stopped with on()/off()
+- `hub.speaker.play_notes(notes, tempo)` — blocking; e.g. `play_notes(['C4/4', 'E4/4', 'G4/4'], tempo=120)`
+- `hub.imu.orientation()` — returns a 3×3 rotation Matrix; ⚠️ Matrix.__str__ is multiline and will truncate through the exec pipeline (only first line survives). Use individual tilt/heading/up instead.
+- `hub.imu.settings()` — returns calibration tuple; read-only diagnostics
+- `motor.control` — Control object with pid(), limits(), stall_tolerances(), target_tolerances(), trajectory(); use for PID tuning via exec()
+- `motor.settings()` — returns (max_voltage_mV,) tuple; e.g. (9000,) = 9 V cap
+- `motor.run_until_stalled(speed)` — runs until motor stalls; useful for finding mechanical limits
+- `sensor.lights.on()` / `sensor.lights.off()` — controls LEDs on sensor housing (both sonic and color)
+- `sensor.detectable_colors()` — returns tuple of Color constants the color sensor will classify
+- `sensor.hsv()` — also accessible via protocol; returns Color(h=INT, s=INT, v=INT)
+- `hub.system.storage` — persistent key-value store; read/write API not yet fully explored
+- `hub.ble.broadcast/observe` — multi-hub communication; signal_strength() needs unknown second argument
 
 **Value types:** Motor and sensor values are integers. IMU values (tilt, heading, acceleration, angular_velocity) are floats. Use `float()` not `int()` when parsing IMU responses server-side.
 
