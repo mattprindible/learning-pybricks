@@ -19,6 +19,9 @@ private class AppCoordinator: ObservableObject {
         server.hubInput
             .sink { [weak self] text in self?.hub.writeStdin(text) }
             .store(in: &cancellables)
+        server.phoneInput
+            .sink { [weak self] cmd in self?.phone.handleCommand(cmd) }
+            .store(in: &cancellables)
         phone.events
             .sink { [weak self] payload in self?.server.send(payload) }
             .store(in: &cancellables)

@@ -30,6 +30,39 @@ def local_ip() -> str:
 
 ip = local_ip()
 connected_clients: set[websockets.ServerConnection] = set()
+# sensor name → set of subscribed clients; key present only while at least one subscriber exists
+subscribers: dict[str, set[websockets.ServerConnection]] = {}
+
+
+async def _phone_command(command: str) -> None:
+    msg = json.dumps({"target": "phone", "command": command})
+    if connected_clients:
+        await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+
+
+async def _subscribe(websocket: websockets.ServerConnection, sensor: str) -> None:
+    first = sensor not in subscribers
+    subscribers.setdefault(sensor, set()).add(websocket)
+    if first:
+        await _phone_command(f"start_{sensor}")
+        log.info("Started %s stream (first subscriber: %s)", sensor, websocket.remote_address)
+
+
+async def _unsubscribe(websocket: websockets.ServerConnection, sensor: str) -> None:
+    subs = subscribers.get(sensor)
+    if not subs:
+        return
+    subs.discard(websocket)
+    if not subs:
+        del subscribers[sensor]
+        await _phone_command(f"stop_{sensor}")
+        log.info("Stopped %s stream (no subscribers)", sensor)
+
+
+async def _cleanup_subscriptions(websocket: websockets.ServerConnection) -> None:
+    for sensor in list(subscribers):
+        if websocket in subscribers.get(sensor, set()):
+            await _unsubscribe(websocket, sensor)
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
@@ -47,9 +80,29 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             log.info("Received from %s: %s", addr, msg)
             if msg.get("type") == "hub_stdout" and not msg.get("data", "").startswith(">"):
                 continue
-            others = connected_clients - {websocket}
-            if others:
-                await asyncio.gather(*(c.send(raw) for c in others))
+
+            if msg.get("type") == "subscribe":
+                sensor = msg.get("sensor", "")
+                if sensor:
+                    await _subscribe(websocket, sensor)
+                continue
+
+            if msg.get("type") == "unsubscribe":
+                sensor = msg.get("sensor", "")
+                if sensor:
+                    await _unsubscribe(websocket, sensor)
+                continue
+
+            # phone_hardware: route to sensor subscribers if any; otherwise broadcast (event-driven)
+            if msg.get("type") == "phone_hardware":
+                sensor = msg.get("sensor", "")
+                targets = subscribers[sensor].copy() if sensor in subscribers else connected_clients - {websocket}
+                if targets:
+                    await asyncio.gather(*(c.send(raw) for c in targets))
+            else:
+                others = connected_clients - {websocket}
+                if others:
+                    await asyncio.gather(*(c.send(raw) for c in others))
 
             # phone battery state → hub status light
             if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
@@ -61,6 +114,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
         pass
     finally:
         connected_clients.discard(websocket)
+        await _cleanup_subscriptions(websocket)
         log.info("Client disconnected: %s", addr)
         if connected_clients:
             stop = json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"})
