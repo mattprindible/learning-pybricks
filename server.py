@@ -56,11 +56,17 @@ async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=5)
         cmd = line.decode().strip()
-        if cmd == "hub_disconnect" and connected_clients:
-            msg = json.dumps({"type": "hub_disconnect"})
-            await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
-            log.info("Sent hub_disconnect to %d client(s)", len(connected_clients))
-        writer.write(b"ok\n")
+        if cmd == "hub_disconnect":
+            if connected_clients:
+                msg = json.dumps({"type": "hub_disconnect"})
+                await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+                log.info("Sent hub_disconnect to %d client(s)", len(connected_clients))
+            else:
+                log.info("hub_disconnect received but no clients connected")
+            writer.write(b"ok\n")
+        else:
+            log.warning("Unknown control command: %r", cmd)
+            writer.write(b"unknown_command\n")
         await writer.drain()
     except Exception as e:
         log.warning("Control error: %s", e)

@@ -1,7 +1,7 @@
 [project]
 name = "learning-pybricks"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agentic coding eval platform with LEGO Inventor Hub, iOS BLE bridge, and WebSocket server"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
