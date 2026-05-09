@@ -212,30 +212,26 @@ async def main():
         # =====================================================================
         print("\n\n=== Phase 3: Closing gaps ===\n")
 
-        # --- hub.ble.signal_strength — needs unknown second arg ---
-        print("[hub.ble.signal_strength — probe arg]")
-        # Try channel 0, then 1
-        for ch in [0, 1, 37, 38, 39]:
-            results, status = await send_exec(ws, f"print('>ble.signal_strength({ch}):' + str(hub.ble.signal_strength({ch})))")
-            for r in results:
-                print(f"  {r}")
-            if status != ">exec:ok":
-                print(f"  {status}")
-                break
+        # --- hub.ble.signal_strength — confirmed: needs BLE channel configured first ---
+        # Skipping re-probe; "channel not configured" means observe_enable() must be called first.
 
-        # --- hub.system.storage — probe read/write API ---
-        print("\n[hub.system.storage — probe API]")
-        # Try calling with a key to read
-        await v(ws, "storage('test_key')?", "hub.system.storage('test_key')")
-        # Try calling with key+value to write
-        results, status = await send_exec(ws, "hub.system.storage('test_key', 42); print('>storage:write:ok')")
+        # --- hub.system.storage — probe with integer keys ---
+        print("[hub.system.storage — integer key probe]")
+        results, status = await send_exec(ws, "hub.system.storage(0, 42); print('>storage:write:ok')")
         for r in results:
             print(f"  {r}")
-        print(f"  write status: {status}")
-        # Read it back
-        await v(ws, "storage('test_key') after write", "hub.system.storage('test_key')")
-        # Clean up
-        await send_exec(ws, "hub.system.storage('test_key', None)")
+        print(f"  write(0, 42): {status}")
+        await v(ws, "storage(0) read back", "hub.system.storage(0)")
+        # Try writing a string value
+        results, status = await send_exec(ws, "hub.system.storage(1, 'hello'); print('>storage:write_str:ok')")
+        for r in results:
+            print(f"  {r}")
+        print(f"  write(1, 'hello'): {status}")
+        await v(ws, "storage(1) read back", "hub.system.storage(1)")
+        # Delete by passing None
+        results, status = await send_exec(ws, "hub.system.storage(0, None); hub.system.storage(1, None)")
+        print(f"  delete(0), delete(1): {status}")
+        await v(ws, "storage after cleanup", "hub.system.storage")
 
         # --- sensor.lights — probe on() args ---
         for k in sensor_keys:

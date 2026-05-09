@@ -124,6 +124,12 @@ while True:
         if stype == "sonic":
             if action == "presence":
                 print(">sensor:" + port + ":presence=" + str(dev.presence()))
+            elif action == "lights" and len(parts) > 3 and parts[3] == "on":
+                dev.lights.on(int(parts[4]) if len(parts) == 5 else 100)
+                print(">sensor:" + port + ":lights:done")
+            elif action == "lights" and len(parts) > 3 and parts[3] == "off":
+                dev.lights.off()
+                print(">sensor:" + port + ":lights:done")
             else:
                 print(">sensor:" + port + ":distance=" + str(dev.distance()))
         elif stype == "color":
@@ -134,6 +140,12 @@ while True:
             elif action == "hsv":
                 c = dev.hsv()
                 print(">sensor:" + port + ":hsv:h=" + str(c.h) + ":s=" + str(c.s) + ":v=" + str(c.v))
+            elif action == "lights" and len(parts) > 3 and parts[3] == "on":
+                dev.lights.on(int(parts[4]) if len(parts) == 5 else 100)
+                print(">sensor:" + port + ":lights:done")
+            elif action == "lights" and len(parts) > 3 and parts[3] == "off":
+                dev.lights.off()
+                print(">sensor:" + port + ":lights:done")
             else:
                 print(">sensor:" + port + ":color=" + str(dev.color()))
 

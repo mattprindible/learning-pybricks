@@ -99,6 +99,9 @@ sensor:PORT:color                  →  >sensor:PORT:color=Color.NAME
 sensor:PORT:ambient                →  >sensor:PORT:ambient=FLOAT   (color; ambient light level)
 sensor:PORT:reflection             →  >sensor:PORT:reflection=INT  (color; surface reflectivity 0-100)
 sensor:PORT:hsv                    →  >sensor:PORT:hsv:h=INT:s=INT:v=INT  (color; hue 0-359, saturation 0-100, value 0-100)
+sensor:PORT:lights:on              →  >sensor:PORT:lights:done     (sensor housing LEDs on at full brightness; sonic and color)
+sensor:PORT:lights:on:BRIGHTNESS   →  >sensor:PORT:lights:done     (BRIGHTNESS 0-100)
+sensor:PORT:lights:off             →  >sensor:PORT:lights:done
 ```
 
 **Hub internals:**
@@ -147,11 +150,10 @@ hub:light:off                     →  >hub:light:done
 - `motor.control` — Control object with pid(), limits(), stall_tolerances(), target_tolerances(), trajectory(); use for PID tuning via exec()
 - `motor.settings()` — returns (max_voltage_mV,) tuple; e.g. (9000,) = 9 V cap
 - `motor.run_until_stalled(speed)` — runs until motor stalls; useful for finding mechanical limits
-- `sensor.lights.on()` / `sensor.lights.off()` — controls LEDs on sensor housing (both sonic and color)
 - `sensor.detectable_colors()` — returns tuple of Color constants the color sensor will classify
-- `sensor.hsv()` — also accessible via protocol; returns Color(h=INT, s=INT, v=INT)
-- `hub.system.storage` — persistent key-value store; read/write API not yet fully explored
-- `hub.ble.broadcast/observe` — multi-hub communication; signal_strength() needs unknown second argument
+- `hub.system.storage(int_key)` / `storage(int_key, value)` / `storage(int_key, None)` — persistent integer-keyed store; read/write/delete. Keys must be integers (not strings).
+- `hub.ble.signal_strength(channel)` — requires a BLE observe/broadcast channel to be configured first via `observe_enable()`; not useful standalone
+- `hub.ble.broadcast/observe/observe_enable` — multi-hub communication; unexplored
 
 **Value types:** Motor and sensor values are integers. IMU values (tilt, heading, acceleration, angular_velocity) are floats. Use `float()` not `int()` when parsing IMU responses server-side.
 
