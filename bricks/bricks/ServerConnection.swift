@@ -102,7 +102,7 @@ class ServerConnectionManager: NSObject, ObservableObject {
         connectionState = .connecting
         log.info("NWConnection → \(endpoint.debugDescription)")
 
-        var wsOpts = NWProtocolWebSocket.Options()
+        let wsOpts = NWProtocolWebSocket.Options()
         wsOpts.autoReplyPing = true
         let p = NWParameters.tcp
         p.defaultProtocolStack.applicationProtocols.insert(wsOpts, at: 0)
