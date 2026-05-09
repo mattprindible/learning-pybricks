@@ -106,15 +106,22 @@ hub:battery:current      →  >hub:battery:current=INT  (mA)
 hub:buttons:pressed      →  >hub:buttons:pressed=none|BUTTON:BUTTON...
 hub:system:info          →  >hub:system:info:name=STR:reset_reason=INT:host_connected=BOOL:start_type=INT
 hub:ble:version          →  >hub:ble:version=STR
-hub:display:number:N     →  >hub:display:done  (N: -99 to 99)
-hub:display:char:C       →  >hub:display:done
-hub:display:text:STR     →  >hub:display:done  (STR may contain colons)
-hub:display:off          →  >hub:display:done
-hub:speaker:beep:HZ:MS   →  >hub:speaker:done
-hub:speaker:volume:PCT   →  >hub:speaker:done  (0–100)
-hub:light:on:COLOR       →  >hub:light:done    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/MAGENTA/VIOLET/WHITE/GRAY/BLACK)
-hub:light:off            →  >hub:light:done
+hub:display:number:N              →  >hub:display:done  (N: -99 to 99)
+hub:display:char:C                →  >hub:display:done
+hub:display:text:STR              →  >hub:display:done  (STR may contain colons)
+hub:display:on:BRIGHTNESS         →  >hub:display:done  (all pixels; 0-100)
+hub:display:pixel:ROW:COL:BRIGHTNESS  →  >hub:display:done  (row/col 0-4; brightness 0-100; 0 = off)
+hub:display:orientation:SIDE      →  >hub:display:done  (TOP/BOTTOM/LEFT/RIGHT/FRONT/BACK; default TOP)
+hub:display:off                   →  >hub:display:done
+hub:speaker:beep:HZ:MS            →  >hub:speaker:done
+hub:speaker:volume:PCT            →  >hub:speaker:done  (0–100)
+hub:light:on:COLOR                →  >hub:light:done    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/MAGENTA/VIOLET/WHITE/GRAY/BLACK)
+hub:light:off                     →  >hub:light:done
 ```
+
+**Display exec-only capabilities** (not in structured protocol):
+- `hub.display.icon(Matrix([[...], ...]))` — display a custom 5x5 image; import `Matrix` from `pybricks.tools`
+- `hub.display.animate(images, interval=MS)` — ⚠️ loops forever, permanently blocks the command loop; do not call from exec() without a way to stop the hub program externally
 
 **Value types:** Motor and sensor values are integers. IMU values (tilt, heading, acceleration, angular_velocity) are floats. Use `float()` not `int()` when parsing IMU responses server-side.
 

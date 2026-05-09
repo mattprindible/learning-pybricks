@@ -1,13 +1,18 @@
 from pybricks.hubs import InventorHub
 from pybricks.iodevices import PUPDevice
 from pybricks.pupdevices import Motor, UltrasonicSensor, ColorSensor
-from pybricks.parameters import Color, Port
+from pybricks.parameters import Color, Port, Side
 
 COLORS = {
     "RED": Color.RED, "GREEN": Color.GREEN, "BLUE": Color.BLUE,
     "YELLOW": Color.YELLOW, "ORANGE": Color.ORANGE, "CYAN": Color.CYAN,
     "MAGENTA": Color.MAGENTA, "VIOLET": Color.VIOLET, "WHITE": Color.WHITE,
     "GRAY": Color.GRAY, "BLACK": Color.BLACK, "NONE": Color.NONE,
+}
+
+SIDES = {
+    "TOP": Side.TOP, "BOTTOM": Side.BOTTOM, "LEFT": Side.LEFT,
+    "RIGHT": Side.RIGHT, "FRONT": Side.FRONT, "BACK": Side.BACK,
 }
 
 DEVICE_NAMES = {
@@ -170,6 +175,19 @@ while True:
             elif action == "text" and len(parts) >= 4:
                 hub.display.text(":".join(parts[3:]))
                 print(">hub:display:done")
+            elif action == "on" and len(parts) == 4:
+                hub.display.on(int(parts[3]))
+                print(">hub:display:done")
+            elif action == "pixel" and len(parts) == 6:
+                hub.display.pixel(int(parts[3]), int(parts[4]), int(parts[5]))
+                print(">hub:display:done")
+            elif action == "orientation" and len(parts) == 4:
+                side = SIDES.get(parts[3].upper())
+                if side is not None:
+                    hub.display.orientation(side)
+                    print(">hub:display:done")
+                else:
+                    print(">error:unknown_side:" + parts[3])
             elif action == "off":
                 hub.display.off()
                 print(">hub:display:done")
