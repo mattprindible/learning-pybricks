@@ -68,7 +68,10 @@ while True:
     if kind == "motor" and port in motors:
         action = parts[2] if len(parts) > 2 else ""
         m = motors[port]
-        if action == "run" and len(parts) == 5:
+        if action == "run" and len(parts) == 4:
+            m.run(int(parts[3]))
+            print(">motor:" + port + ":running")
+        elif action == "run" and len(parts) == 5:
             speed    = int(parts[3])
             duration = int(parts[4])
             m.reset_angle(0)
@@ -188,6 +191,13 @@ while True:
 
         else:
             print(">error:unknown:" + cmd)
+
+    elif kind == "exec":
+        try:
+            exec(cmd[5:], globals())
+            print(">exec:ok")
+        except Exception as e:
+            print(">exec:error:" + str(e))
 
     else:
         print(">error:unknown:" + cmd)
