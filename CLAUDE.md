@@ -140,6 +140,72 @@ hub:light:blink:COLOR:ON_MS:OFF_MS →  >hub:light:done   (non-blocking, loops u
 hub:light:off                     →  >hub:light:done
 ```
 
+**DriveBase** (exec-only — not in structured protocol):
+```python
+from pybricks.robotics import DriveBase
+# Guard against EBUSY: DriveBase takes exclusive motor ownership; reuse existing instance if present
+_d = globals().get('db')
+db = _d if hasattr(_d, 'reset') else DriveBase(motors['LEFT'], motors['RIGHT'], wheel_diameter=MM, axle_track=MM)
+
+db.straight(distance_mm)           # blocking; ±1mm accuracy empirically
+db.turn(angle_deg)                 # blocking; ±0.5° with wheel odometry
+db.arc(radius_mm, angle=deg)       # blocking; arc by angle (keyword-only)
+db.arc(radius_mm, distance=mm)     # blocking; arc by distance (keyword-only); mutually exclusive with angle=
+db.curve(radius_mm, angle_deg)     # blocking; positional args; legacy alias for arc(radius, angle=angle)
+db.drive(speed_mm_s, turn_rate)    # non-blocking continuous drive
+db.brake()                         # non-blocking; active electrical braking (sheds speed faster than stop)
+db.stop()                          # non-blocking; passive coast
+db.reset()                         # zero odometry counters
+db.distance()                      # → int mm (cumulative, signed)
+db.angle()                         # → float deg (cumulative, signed)
+db.state()                         # → (distance_mm, speed_mm_s, angle_deg, turn_rate_deg_s)
+db.done()                          # → bool; False while wait=False command is running
+db.stalled()                       # → bool; False in all tested cases
+db.settings()                      # → (straight_speed, straight_accel, turn_rate, turn_accel) = (300,500,180,360) defaults
+db.settings(straight_speed=N, straight_acceleration=N, turn_rate=N, turn_acceleration=N)
+db.use_gyro(True)                  # enable IMU-based heading; setter only (no getter)
+                                   # ⚠️ check hub.imu.ready() first — inaccurate for ~2s after hub restart
+db.heading_control                 # Control object (same API as motor.control): pid(), limits(), etc.
+db.distance_control                # Control object for the straight-line PID
+```
+**DriveBase gotchas:**
+- `import pybricks.robotics; dir(pybricks.robotics)` fails in MicroPython — use `from pybricks.robotics import DriveBase` directly
+- `GyroDriveBase` does not exist as a separate class; use `db.use_gyro(True)` instead
+- Motor ownership is exclusive: creating a second DriveBase with the same motors raises `[Errno 16] EBUSY`. Always use the `globals().get()` guard above when creating from exec()
+- `straight(wait=False)` launches non-blocking; read `db.done()` in a subsequent exec() to poll completion
+
+**Car** (Ackermann/car-style steering — exec-only):
+```python
+from pybricks.robotics import Car
+# drive_motors can be a single Motor or a list of Motors (multi-motor rear axle)
+car = Car(steer_motor=motors['A'], drive_motors=motors['B'])
+car = Car(steer_motor=motors['A'], drive_motors=[motors['B'], motors['C']])
+
+car.steer(angle)          # set steering angle
+car.drive_speed(speed)    # set drive speed
+car.drive_power(power)    # set drive power
+```
+**Car gotcha:** Calibrates steering on construction by running the steer motor to both hard stops to find center. Raises `"The steering mechanism has no end stop. Did you build a car yet?"` if the motor has no physical end stops. Requires a real car build — cannot be tested with free-hanging motors.
+
+**SpikeBase** (SPIKE Prime / Inventor Hub differential drive — exec-only):
+```python
+from pybricks.robotics import SpikeBase
+sb = SpikeBase(left_motor=motors['A'], right_motor=motors['B'])
+
+# Tank mode — independent left/right speed control (power-based, no odometry)
+sb.tank_move_forever(speed_left, speed_right)
+sb.tank_move_for_time(speed_left, speed_right, time_ms)
+sb.tank_move_for_degrees(speed_left, speed_right, angle)
+
+# Steering mode — unified speed + differential steering
+sb.steering_move_forever(speed, steering)
+sb.steering_move_for_time(speed, steering, time_ms)
+sb.steering_move_for_degrees(speed, steering, angle)
+
+sb.stop()
+```
+**SpikeBase vs DriveBase:** No wheel geometry, no odometry, no PID closed-loop. Pure power commands (percentages, not mm/s). `steering` maps to left/right speed differential. Simpler — use when you don't know or don't care about wheel geometry.
+
 **Exec-only capabilities** (not in structured protocol):
 - `hub.display.icon(Matrix([[...], ...]))` — display a custom 5x5 image; import `Matrix` from `pybricks.tools`
 - `hub.display.animate(images, interval=MS)` — ⚠️ loops forever, permanently blocks the command loop
