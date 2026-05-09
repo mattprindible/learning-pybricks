@@ -19,17 +19,6 @@ struct ContentView: View {
             )
         }
         .padding()
-        .onReceive(hub.stdout) { text in
-            server.send(["type": "hub_stdout", "data": text])
-        }
-        .onReceive(server.commands) { cmd in
-            if cmd == "hub_disconnect" {
-                hub.releaseForDeploy()
-            }
-        }
-        .onReceive(server.hubInput) { text in
-            hub.writeStdin(text)
-        }
     }
 
     // MARK: - Hub row

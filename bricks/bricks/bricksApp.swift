@@ -1,19 +1,37 @@
+import Combine
 import SwiftUI
+
+private class AppCoordinator: ObservableObject {
+    let hub = HubConnectionManager()
+    let server = ServerConnectionManager()
+    private var cancellables = Set<AnyCancellable>()
+
+    init() {
+        hub.stdout
+            .sink { [weak self] line in self?.server.send(["type": "hub_stdout", "data": line]) }
+            .store(in: &cancellables)
+        server.commands
+            .sink { [weak self] cmd in
+                if cmd == "hub_disconnect" { self?.hub.releaseForDeploy() }
+            }
+            .store(in: &cancellables)
+        server.hubInput
+            .sink { [weak self] text in self?.hub.writeStdin(text) }
+            .store(in: &cancellables)
+    }
+}
 
 @main
 struct bricksApp: App {
-    @StateObject private var hub = HubConnectionManager()
-    @StateObject private var server = ServerConnectionManager()
+    @StateObject private var coordinator = AppCoordinator()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            ContentView(hub: hub, server: server)
+            ContentView(hub: coordinator.hub, server: coordinator.server)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                hub.releaseBLE()
-            }
+            if phase == .background { coordinator.hub.releaseBLE() }
         }
     }
 }

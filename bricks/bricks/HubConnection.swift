@@ -18,7 +18,7 @@ private let eventStdout: UInt8 = 0x01
 private let flagUserProgramRunning: UInt32 = 1 << 6
 
 
-enum HubConnectionState {
+enum HubConnectionState: Equatable {
     case unavailable(String)
     case searching
     case connecting
@@ -98,15 +98,15 @@ class HubConnectionManager: NSObject, ObservableObject {
             hub = peripheral
             hub?.delegate = self
             connectionState = .connecting
-            // connect() queues a passive reconnect; scan actively so we
-            // catch the hub immediately if it's already advertising.
+            // Cancel any stale pending connection before re-connecting, then
+            // scan actively so we catch the hub if it's already advertising.
+            central.cancelPeripheralConnection(peripheral)
             central.connect(peripheral)
-            central.scanForPeripherals(withServices: [pybricksServiceUUID])
         } else {
             log.info("No known peripheral, scanning")
             connectionState = .searching
-            central.scanForPeripherals(withServices: [pybricksServiceUUID])
         }
+        central.scanForPeripherals(withServices: [pybricksServiceUUID])
     }
 }
 
