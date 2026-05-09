@@ -1,0 +1,84 @@
+# CLAUDE.md
+
+Agentic coding eval platform. Physical LEGO hub is the ground truth — agents modify code, deploy, and observe real hardware behavior.
+
+## Stack
+
+```
+main.py          Pybricks MicroPython on LEGO Inventor Hub
+bricks/          SwiftUI iOS app — BLE bridge between hub and server
+server.py        asyncio WebSocket server — observation + control point
+deploy.sh        One-command deploy pipeline
+```
+
+## Running the system
+
+The server must be running before deploy works:
+
+```bash
+uv run python server.py
+```
+
+Then deploy everything (hub code + iOS app) with:
+
+```bash
+./deploy.sh
+```
+
+## Deploy sequence
+
+1. `deploy.sh` sends `hub_disconnect\n` to `localhost:8766` (control TCP port)
+2. `server.py` receives it and broadcasts `{"type": "hub_disconnect"}` to all WebSocket clients
+3. iOS app receives the message, calls `hub.releaseForDeploy()`: sends STOP_USER_PROGRAM (`0x00`) over BLE, then `cancelPeripheralConnection`. Sets `releasingForDeploy = true` so the normal reconnect loop does not fire.
+4. `pybricksdev` uploads new `main.py` to hub over BLE
+5. Xcode builds + installs new iOS app via `devicectl`
+6. New iOS app launches with fresh state (`releasingForDeploy = false`), reconnects to hub, auto-starts the program
+
+If `server.py` is not running when `deploy.sh` runs, it will warn and the pybricksdev step will likely fail because the hub is still BLE-connected to iOS.
+
+## Hub protocol
+
+Hub emits events via `print()` → Pybricks BLE WRITE_STDOUT notification (event type `0x01`) → iOS decodes UTF-8, strips whitespace → server receives:
+
+```json
+{"type": "hub_stdout", "data": "<line>"}
+```
+
+Pybricks BLE command/event characteristic (`c5f50002-...`):
+- Event `0x00` = STATUS_REPORT: 4-byte LE flags, bit 6 = USER_PROGRAM_RUNNING
+- Event `0x01` = WRITE_STDOUT: remaining bytes = UTF-8
+- Command `0x00` = STOP_USER_PROGRAM
+- Command `0x01` = START_USER_PROGRAM
+
+## Key design decisions
+
+**Auto-start via STATUS_REPORT**: On BLE subscribe, the hub sends a STATUS_REPORT. iOS reads the USER_PROGRAM_RUNNING flag and only sends START if the program isn't already running. This avoids a GATT BUSY error (0x81) that would disrupt the notification pipeline.
+
+**`releasingForDeploy` vs `releaseBLE()`**: Two separate methods on `HubConnectionManager`.
+- `releaseForDeploy()` — called by the `hub_disconnect` server command. Sets `releasingForDeploy = true` so `didDisconnectPeripheral` does not reconnect.
+- `releaseBLE()` — called on app background/terminate. Sends STOP + disconnects but does NOT set the flag, so the app reconnects if it returns to foreground.
+
+**iOS as BLE bridge**: Pybricks hubs only advertise BLE; an iPhone acts as an always-on relay to the IP network. The `bluetooth-central` background mode keeps the BLE connection alive even when the app is backgrounded — which is why the explicit release step is needed before pybricksdev can connect.
+
+**Bonjour + cached direct URL**: `ServerConnectionManager` uses NWBrowser (Bonjour) only on first launch. Once the server sends its `hello` message containing `ws_url`, iOS caches that URL and uses URLSession WebSocket directly on all subsequent connects.
+
+## Agent integration points
+
+- **Observe hub events**: Connect a WebSocket client to `ws://<server-ip>:8765/`
+- **Trigger deploy**: Run `./deploy.sh`
+- **Stop hub program only**: Send `hub_disconnect\n` to `localhost:8766`
+
+## File structure
+
+```
+main.py                              Hub program (edit to change hub behavior)
+server.py                            WebSocket + control server
+deploy.sh                            Deploy pipeline
+pyproject.toml                       Python deps
+uv.lock                              Locked deps
+bricks/bricks/
+  bricksApp.swift                    App entry; owns HubConnectionManager + ServerConnectionManager
+  ContentView.swift                  UI; wires hub stdout → server.send() and server commands → hub actions
+  HubConnection.swift                CoreBluetooth hub manager
+  ServerConnection.swift             WebSocket server manager
+```
