@@ -37,6 +37,7 @@ class HubConnectionManager: NSObject, ObservableObject {
     private var didStartProgram = false
     private var pendingRelease = false
     private var releasingForDeploy = false
+    private var stdoutBuffer = Data()
 
     override init() {
         super.init()
@@ -160,6 +161,7 @@ extension HubConnectionManager: CBCentralManagerDelegate {
         commandChar = nil
         didStartProgram = false
         pendingRelease = false
+        stdoutBuffer = Data()
         if releasingForDeploy {
             log.info("Holding reconnect — BLE released for deploy")
             connectionState = .searching
@@ -188,6 +190,9 @@ extension HubConnectionManager: CBPeripheralDelegate {
             return
         }
         commandChar = characteristic
+        let mtu = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        log.info("Negotiated MTU payload: \(mtu) bytes")
+        stdout.send(">mtu:\(mtu)")
         peripheral.setNotifyValue(true, for: characteristic)
     }
 
@@ -213,11 +218,17 @@ extension HubConnectionManager: CBPeripheralDelegate {
                 peripheral.writeValue(Data([0x01]), for: characteristic, type: .withResponse)
             }
         case eventStdout:
-            guard let text = String(data: data.dropFirst(), encoding: .utf8), !text.isEmpty else { return }
-            let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty else { return }
-            log.info("Hub stdout: \(line)")
-            stdout.send(line)
+            stdoutBuffer.append(contentsOf: data.dropFirst())
+            while let newlineIdx = stdoutBuffer.firstIndex(of: 0x0A) {
+                let chunk = Data(stdoutBuffer[stdoutBuffer.startIndex..<newlineIdx])
+                let afterNewline = stdoutBuffer.index(after: newlineIdx)
+                stdoutBuffer = afterNewline < stdoutBuffer.endIndex ? Data(stdoutBuffer[afterNewline...]) : Data()
+                guard let line = String(data: chunk, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !line.isEmpty else { continue }
+                log.info("Hub stdout: \(line)")
+                stdout.send(line)
+            }
         default:
             break
         }

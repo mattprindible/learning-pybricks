@@ -163,6 +163,8 @@ class ServerConnectionManager: NSObject, ObservableObject {
     private func openDirect(url: URL) {
         wsTask?.cancel(with: .normalClosure, reason: nil)
         wsTask = nil
+        nwConn?.cancel()
+        nwConn = nil
         connectionState = .connecting
         log.info("URLSession → \(url.absoluteString)")
         let task = session.webSocketTask(with: url)

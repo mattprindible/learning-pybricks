@@ -62,6 +62,62 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **Bonjour + cached direct URL**: `ServerConnectionManager` uses NWBrowser (Bonjour) only on first launch. Once the server sends its `hello` message containing `ws_url`, iOS caches that URL and uses URLSession WebSocket directly on all subsequent connects.
 
+**iOS as thin BLE bridge**: The iOS app has no business logic — it is a hardware bridge. Hub stdout lines are forwarded to the server verbatim; server messages addressed `target: hub` are forwarded to hub stdin verbatim. All logic lives in `server.py`. The iOS app and hub should rarely need redeployment; only `server.py` and `main.py` change during iteration.
+
+**Hub as hardware wrapper**: `main.py` is a stable device driver, not an application. It exposes the full Pybricks hardware API (motors, sensors, IMU, display, speaker, light) via a colon-delimited stdin/stdout protocol. Hub logic is limited to dispatching commands and reporting results — no decision-making. This means `main.py` rarely needs to change once the command vocabulary is established.
+
+**BLE stdout line buffer**: iOS buffers WRITE_STDOUT BLE notifications and only emits a complete line when `\n` (0x0A) is received. This handles Pybricks fragmenting long `print()` calls across multiple notifications. Negotiated MTU is 182 bytes; any single line under that fits in one notification.
+
+**`input()` is the only stdin mechanism**: `sys.stdin` is unavailable in Pybricks MicroPython. `input()` works but blocks until `\r\n` arrives and echoes the received line back to stdout at the firmware level. The server filters echoes via the `>` prefix convention (lines not starting with `>` are dropped).
+
+## Hub command protocol
+
+`main.py` accepts commands via stdin and responds via stdout. Commands are colon-delimited; responses are prefixed with `>`.
+
+**External devices** (port-addressed):
+```
+motor:PORT:run:SPEED:DURATION_MS  →  >motor:PORT:done:angle=INT
+motor:PORT:angle                  →  >motor:PORT:angle=INT
+motor:PORT:stop                   →  >motor:PORT:stopped
+sensor:PORT:distance              →  >sensor:PORT:distance=INT   (2000 = nothing detected)
+sensor:PORT:color                 →  >sensor:PORT:color=Color.NAME
+```
+
+**Hub internals:**
+```
+hub:imu:ready            →  >hub:imu:ready=True|False  (False until hub sits still ~2s after start)
+hub:imu:tilt             →  >hub:imu:tilt:pitch=FLOAT:roll=FLOAT
+hub:imu:heading          →  >hub:imu:heading=FLOAT
+hub:imu:acceleration     →  >hub:imu:acceleration:x=FLOAT:y=FLOAT:z=FLOAT  (mm/s²; z≈9800 when flat)
+hub:imu:angular_velocity →  >hub:imu:angular_velocity:x=FLOAT:y=FLOAT:z=FLOAT  (deg/s)
+hub:imu:up               →  >hub:imu:up=Side.NAME
+hub:imu:stationary       →  >hub:imu:stationary=True|False  (noisy — can read False even when still)
+hub:battery:voltage      →  >hub:battery:voltage=INT  (mV)
+hub:battery:current      →  >hub:battery:current=INT  (mA)
+hub:buttons:pressed      →  >hub:buttons:pressed=none|BUTTON:BUTTON...
+hub:system:info          →  >hub:system:info:name=STR:reset_reason=INT:host_connected=BOOL:start_type=INT
+hub:ble:version          →  >hub:ble:version=STR
+hub:display:number:N     →  >hub:display:done  (N: -99 to 99)
+hub:display:char:C       →  >hub:display:done
+hub:display:text:STR     →  >hub:display:done  (STR may contain colons)
+hub:display:off          →  >hub:display:done
+hub:speaker:beep:HZ:MS   →  >hub:speaker:done
+hub:speaker:volume:PCT   →  >hub:speaker:done  (0–100)
+hub:light:on:COLOR       →  >hub:light:done    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/MAGENTA/VIOLET/WHITE/GRAY/BLACK)
+hub:light:off            →  >hub:light:done
+```
+
+**Value types:** Motor and sensor values are integers. IMU values (tilt, heading, acceleration, angular_velocity) are floats. Use `float()` not `int()` when parsing IMU responses server-side.
+
+**Startup events** (emitted once before `>ready`):
+```
+>mtu:INT           — negotiated BLE MTU payload size in bytes
+>port:X=LABEL      — device on each port (or "none")
+>ready             — hub is accepting commands
+```
+
+**Errors:** `>error:unknown:ORIGINAL_COMMAND`
+
 ## Agent integration points
 
 - **Observe hub events**: Connect a WebSocket client to `ws://<server-ip>:8765/`
