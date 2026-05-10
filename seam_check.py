@@ -8,6 +8,7 @@ Run with server.py running and hub connected via iOS app.
   Seam 1: Server WebSocket schema   (server.py ↔ agents/clients)
   Seam 2: Hub stdout convention     (hub/iOS ↔ server) — >prefix, exec handler, terminal markers
   Seam 3: Hub command routing       (server ↔ iOS ↔ hub) — commands reach the hub
+  Seam 4: Hub streaming             (subscribe → hub_stream events arrive with correct schema)
 
 Usage: uv run python seam_check.py
 """
@@ -135,6 +136,30 @@ async def contract_hub_stdout_schema(ws):
         return failed("hub_stdout schema", "timed out")
 
 
+async def contract_hub_imu_stream(ws):
+    """
+    Subscribe to hub:imu → server sends stream:start to hub → hub_stream events arrive.
+    Proves: hub: sensor routing, >stream: interception, hub_stream JSON schema.
+    """
+    await ws.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
+    deadline = asyncio.get_event_loop().time() + HUB_TIMEOUT
+    try:
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return failed("hub imu stream", "timed out — no hub_stream event received")
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            msg = json.loads(raw)
+            if msg.get("type") == "hub_stream" and msg.get("sensor") == "hub:imu":
+                await ws.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
+                for field in ("pitch", "roll", "heading"):
+                    if not isinstance(msg.get(field), float):
+                        return failed("hub imu stream", f"field {field!r} missing or not float in {msg}")
+                return passed("hub imu stream — subscribe→hub_stream{pitch,roll,heading: float}")
+    except TimeoutError:
+        return failed("hub imu stream", "timed out")
+
+
 async def main():
     print(f"\nConnecting to {WS_URL} ...\n")
     try:
@@ -145,6 +170,7 @@ async def main():
                 await contract_hub_exec_ok(ws),
                 await contract_hub_exec_error(ws),
                 await contract_hub_stdout_schema(ws),
+                await contract_hub_imu_stream(ws),
             ]
     except OSError as e:
         print(f"Cannot connect: {e}\nIs server.py running?")

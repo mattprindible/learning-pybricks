@@ -67,6 +67,16 @@ for name, port in PORT_MAP:
 print(">ready")
 
 
+def _emit_imu():
+    pitch, roll = hub.imu.tilt()
+    heading = hub.imu.heading()
+    print(">stream:imu:pitch=" + str(pitch) + ":roll=" + str(roll) + ":heading=" + str(heading))
+
+
+_STREAM_FNS = {"imu": _emit_imu}
+_streams = {}
+
+
 async def dispatch(cmd):
     if not cmd:
         return
@@ -85,13 +95,13 @@ async def dispatch(cmd):
             speed    = int(parts[3])
             duration = int(parts[4])
             m.reset_angle(0)
-            m.run_time(speed, duration, wait=True)
+            await m.run_time(speed, duration)
             print(">motor:" + port + ":done:angle=" + str(m.angle()))
         elif action == "run_angle" and len(parts) == 5:
-            m.run_angle(int(parts[3]), int(parts[4]), wait=True)
+            await m.run_angle(int(parts[3]), int(parts[4]))
             print(">motor:" + port + ":done:angle=" + str(m.angle()))
         elif action == "run_target" and len(parts) == 5:
-            m.run_target(int(parts[3]), int(parts[4]), wait=True)
+            await m.run_target(int(parts[3]), int(parts[4]))
             print(">motor:" + port + ":done:angle=" + str(m.angle()))
         elif action == "reset_angle" and len(parts) == 4:
             m.reset_angle(int(parts[3]))
@@ -253,7 +263,7 @@ async def dispatch(cmd):
 
         elif subsystem == "speaker":
             if action == "beep" and len(parts) == 5:
-                hub.speaker.beep(int(parts[3]), int(parts[4]))
+                await hub.speaker.beep(int(parts[3]), int(parts[4]))
                 print(">hub:speaker:done")
             elif action == "volume" and len(parts) == 4:
                 hub.speaker.volume(int(parts[3]))
@@ -292,6 +302,23 @@ async def dispatch(cmd):
             else:
                 print(">error:unknown:" + cmd)
 
+        elif subsystem == "stream":
+            if action == "start" and len(parts) == 5:
+                name = parts[3]
+                interval = int(parts[4])
+                fn = _STREAM_FNS.get(name)
+                if fn:
+                    _streams[name] = {"interval": interval, "ticks": interval, "fn": fn}
+                    print(">hub:stream:started:" + name)
+                else:
+                    print(">error:unknown_stream:" + name)
+            elif action == "stop" and len(parts) == 4:
+                name = parts[3]
+                _streams.pop(name, None)
+                print(">hub:stream:stopped:" + name)
+            else:
+                print(">error:unknown:" + cmd)
+
         else:
             print(">error:unknown:" + cmd)
 
@@ -325,4 +352,18 @@ async def stdin_loop():
             buf.append(b)
 
 
-run_task(stdin_loop())
+async def stream_loop():
+    while True:
+        await wait(10)
+        for name in list(_streams):
+            s = _streams[name]
+            s["ticks"] += 10
+            if s["ticks"] >= s["interval"]:
+                s["ticks"] = 0
+                try:
+                    s["fn"]()
+                except Exception as e:
+                    print(">stream:error:" + name + ":" + str(e))
+
+
+run_task(multitask(stdin_loop(), stream_loop()))
