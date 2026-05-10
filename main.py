@@ -2,6 +2,7 @@ from pybricks.hubs import InventorHub
 from pybricks.iodevices import PUPDevice
 from pybricks.pupdevices import Motor, UltrasonicSensor, ColorSensor
 from pybricks.parameters import Axis, Color, Port, Side
+from pybricks.tools import wait, run_task, multitask, read_input_byte
 
 COLORS = {
     "RED": Color.RED, "GREEN": Color.GREEN, "BLUE": Color.BLUE,
@@ -65,10 +66,10 @@ for name, port in PORT_MAP:
 
 print(">ready")
 
-while True:
-    cmd = input()
+
+async def dispatch(cmd):
     if not cmd:
-        continue
+        return
     parts = cmd.split(":")
 
     kind = parts[0] if len(parts) > 0 else ""
@@ -303,3 +304,25 @@ while True:
 
     else:
         print(">error:unknown:" + cmd)
+
+
+async def stdin_loop():
+    buf = bytearray()
+    while True:
+        b = read_input_byte()
+        if b is None:
+            await wait(5)
+            continue
+        if b in (10, 13):
+            if buf:
+                cmd = str(buf, "utf-8").strip()
+                buf = bytearray()
+                try:
+                    await dispatch(cmd)
+                except Exception as e:
+                    print(">error:exception:" + str(e))
+        else:
+            buf.append(b)
+
+
+run_task(stdin_loop())
