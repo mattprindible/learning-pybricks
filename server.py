@@ -40,11 +40,20 @@ async def _phone_command(command: str) -> None:
         await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
 
 
+async def _hub_command(command: str) -> None:
+    msg = json.dumps({"target": "hub", "data": command})
+    if connected_clients:
+        await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+
+
 async def _subscribe(websocket: websockets.ServerConnection, sensor: str) -> None:
     first = sensor not in subscribers
     subscribers.setdefault(sensor, set()).add(websocket)
     if first:
-        await _phone_command(f"start_{sensor}")
+        if sensor.startswith("hub:"):
+            await _hub_command(f"hub:stream:start:{sensor[4:]}:100")
+        else:
+            await _phone_command(f"start_{sensor}")
         log.info("Started %s stream (first subscriber: %s)", sensor, websocket.remote_address)
 
 
@@ -55,7 +64,10 @@ async def _unsubscribe(websocket: websockets.ServerConnection, sensor: str) -> N
     subs.discard(websocket)
     if not subs:
         del subscribers[sensor]
-        await _phone_command(f"stop_{sensor}")
+        if sensor.startswith("hub:"):
+            await _hub_command(f"hub:stream:stop:{sensor[4:]}")
+        else:
+            await _phone_command(f"stop_{sensor}")
         log.info("Stopped %s stream (no subscribers)", sensor)
 
 
@@ -92,6 +104,26 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 if sensor:
                     await _unsubscribe(websocket, sensor)
                 continue
+
+            # hub_stdout >stream: lines — parse and route to hub: subscribers
+            if msg.get("type") == "hub_stdout":
+                data = msg.get("data", "")
+                if data.startswith(">stream:"):
+                    parts_data = data[8:].split(":")
+                    sensor_key = "hub:" + parts_data[0] if parts_data else ""
+                    payload: dict = {"type": "hub_stream", "sensor": sensor_key}
+                    for kv in parts_data[1:]:
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            try:
+                                payload[k] = float(v)
+                            except ValueError:
+                                payload[k] = v
+                    raw_json = json.dumps(payload)
+                    targets = subscribers.get(sensor_key, set()).copy()
+                    if targets:
+                        await asyncio.gather(*(c.send(raw_json) for c in targets))
+                    continue
 
             # phone_hardware: route to sensor subscribers if any; otherwise broadcast (event-driven)
             if msg.get("type") == "phone_hardware":

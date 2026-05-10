@@ -92,7 +92,15 @@ if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
 
 **BLE stdout line buffer**: iOS buffers WRITE_STDOUT BLE notifications and only emits a complete line when `\n` (0x0A) is received. This handles Pybricks fragmenting long `print()` calls across multiple notifications. Negotiated MTU is 182 bytes; any single line under that fits in one notification.
 
-**`input()` is the only stdin mechanism**: `sys.stdin` is unavailable in Pybricks MicroPython. `input()` works but blocks until `\r\n` arrives and echoes the received line back to stdout at the firmware level. The server filters echoes via the `>` prefix convention (lines not starting with `>` are dropped).
+**Async stdin loop**: `main.py` uses `run_task(multitask(stdin_loop(), stream_loop()))` instead of `input()`. `stdin_loop` reads bytes via `read_input_byte()` (returns `None` when no byte available), assembles lines, and `await`s `dispatch()`. `stream_loop` ticks every 10ms and fires registered emit functions. Both tasks run concurrently via the Pybricks scheduler.
+
+**Pybricks async runtime import**: `run_task`, `multitask`, and `read_input_byte` live in `pybricks.tools`. Import them with `from pybricks.tools import run_task, multitask, read_input_byte`. Do NOT `import pybricks` — that shadows the runtime module and raises `AttributeError: 'module' object has no attribute 'run_task'`. Confirmed empirically.
+
+**`bytearray.decode()` unavailable**: Use `str(buf, "utf-8")` not `buf.decode("utf-8")` in Pybricks MicroPython.
+
+**`>` prefix convention**: All hub output lines are prefixed with `>` by convention. `server.py` drops any `hub_stdout` line that doesn't start with `>` as a safety filter (originally guarded against `input()` echo; now just defensive).
+
+**Blocking motor ops need `await`**: In Pybricks async, `motor.run_time(speed, ms)`, `motor.run_angle(speed, deg)`, `motor.run_target(speed, deg)`, and `hub.speaker.beep(hz, ms)` return awaitables. Calling without `await` starts the operation but returns immediately (non-blocking). Always use `await` in `dispatch()`. With `await`, the task suspends and `multitask` allows `stream_loop` to keep running during the motor op — verified empirically: 20 IMU stream events arrived during a 2-second `run_time`. Max gap was 179ms at 100ms stream interval.
 
 **Safe state on client disconnect**: `server.py` broadcasts `exec:[m.stop() for m in motors.values()]` to all remaining clients whenever any client disconnects. This ensures hardware stops if a controller crashes or exits uncleanly. Control scripts should also send a stop in their `finally` block as a belt-and-suspenders measure.
 
@@ -162,7 +170,16 @@ hub:speaker:volume:PCT            →  >hub:speaker:done  (0–100)
 hub:light:on:COLOR                →  >hub:light:done    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/MAGENTA/VIOLET/WHITE/GRAY/BLACK)
 hub:light:blink:COLOR:ON_MS:OFF_MS →  >hub:light:done   (non-blocking, loops until on/off called)
 hub:light:off                     →  >hub:light:done
+hub:stream:start:NAME:INTERVAL_MS →  >hub:stream:started:NAME
+hub:stream:stop:NAME              →  >hub:stream:stopped:NAME
 ```
+
+**Command channel concurrency**: The hub processes one command at a time. Blocking commands (`run:SPEED:DURATION`, `run_angle`, `run_target`, `speaker:beep`) suspend `stdin_loop` until they finish — no further commands are processed during that window. Stream subscriptions are unaffected (they run in a separate `stream_loop` task). If you need concurrent motor activity and new commands, use non-blocking forms: `motor:PORT:run:SPEED` to start, then `motor:PORT:stop` or `motor:PORT:run_angle` later to change behavior.
+
+**Hub streaming**: `hub:stream:start:NAME:INTERVAL_MS` registers an emit function that fires every INTERVAL_MS. Output lines are `>stream:NAME:key=val:key=val...` on hub stdout. The server intercepts these (they never reach the generic broadcast), parses them into `hub_stream` JSON, and routes to subscribers. Subscribe with `{"type": "subscribe", "sensor": "hub:NAME"}`. Available streams:
+- `imu` — `pitch`, `roll`, `heading` (floats, degrees); emits `>stream:imu:pitch=F:roll=F:heading=F`
+
+Server routing: `{"type": "subscribe", "sensor": "hub:imu"}` → server sends `hub:stream:start:imu:100` to hub. Hub starts emitting. Server parses `>stream:imu:...` lines and sends `{"type": "hub_stream", "sensor": "hub:imu", "pitch": F, "roll": F, "heading": F}` to subscribers only.
 
 **DriveBase** (exec-only — not in structured protocol):
 ```python
@@ -276,6 +293,8 @@ Multi-output responses: collect lines until `>exec:` prefix appears (that's the 
 main.py                              Hub program (edit to change hub behavior)
 server.py                            WebSocket + control server
 deploy.sh                            Deploy pipeline
+tilt_drive.py                        Example control script: iPhone tilt → motor speed
+seam_check.py                        Contract tests for all three interface seams
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 bricks/bricks/
@@ -285,3 +304,5 @@ bricks/bricks/
   ServerConnection.swift             WebSocket server manager
   PhoneHardware.swift                Phone sensor manager — publishes phone_hardware events to server
 ```
+
+Control scripts (like `tilt_drive.py`) are the natural unit of agent behavior: connect to `ws://localhost:8765/`, subscribe to sensor streams, run logic, send hub commands, clean up on exit. No deploy needed — pure server-side Python.
