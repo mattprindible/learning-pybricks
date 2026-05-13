@@ -130,7 +130,7 @@ The server tracks the live state of both hardware devices and includes it in eve
 
 **Blocking motor ops need `await`**: In Pybricks async, `motor.run_time(speed, ms)`, `motor.run_angle(speed, deg)`, `motor.run_target(speed, deg)`, and `hub.speaker.beep(hz, ms)` return awaitables. Calling without `await` starts the operation but returns immediately (non-blocking). Always use `await` in `dispatch()`. With `await`, the task suspends and `multitask` allows `stream_loop` to keep running during the motor op — verified empirically: 20 IMU stream events arrived during a 2-second `run_time`. Max gap was 179ms at 100ms stream interval.
 
-**Safe state on client disconnect**: `server.py` broadcasts `exec:[m.stop() for m in motors.values()]` to all remaining clients whenever any client disconnects. This ensures hardware stops if a controller crashes or exits uncleanly. Control scripts should also send a stop in their `finally` block as a belt-and-suspenders measure.
+**Safe state on agent exit**: Each agent is responsible for stopping its own hardware in a `finally` block. The server does not intervene — it can't know which motors belong to which agent, and a blanket stop would silently interrupt other agents running concurrently. Example: `await ws.send(json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"}))`
 
 **`exec()` works in Pybricks MicroPython**: `exec(code, globals())` executes arbitrary Python with full access to the hub's runtime globals. This makes `main.py` a live REPL over WebSocket — new hub behaviours can be sent as code strings without redeploying. Discovered empirically 2026-05-09.
 

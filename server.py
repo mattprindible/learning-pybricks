@@ -246,11 +246,6 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 c.send(json.dumps({"type": "hub_disconnected"}))
                 c.send(json.dumps({"type": "phone_disconnected"}))
             log.info("Bridge disconnected — broadcast hub_disconnected + phone_disconnected")
-        if connected_clients:
-            stop = json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"})
-            for c in connected_clients.copy():
-                c.send(stop)
-            log.info("Sent safe-state stop to %d remaining client(s)", len(connected_clients))
 
 
 async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
