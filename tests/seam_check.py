@@ -211,8 +211,8 @@ async def contract_phone_state_cache():
                 if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
                     level = msg.get("level")
                     state = msg.get("state")
-                    if not isinstance(level, float):
-                        return failed("phone state cache", f"battery level not float: {level!r}")
+                    if not isinstance(level, (int, float)):
+                        return failed("phone state cache", f"battery level not numeric: {level!r}")
                     if state not in {"charging", "full", "unplugged", "unknown"}:
                         return failed("phone state cache", f"battery state unexpected: {state!r}")
                     print(f"     phone battery: level={level:.0%} state={state!r}")

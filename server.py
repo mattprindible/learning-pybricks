@@ -164,6 +164,10 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
 
             if msg.get("type") == "hub_connected":
                 hub_connected = True
+                if bridge_client is None:
+                    bridge_client = client
+                    phone_connected = True
+                    log.info("Bridge inferred from hub_connected (phone_connected not received): %s", addr)
                 log.info("Hub connected (via bridge: %s)", addr)
                 broadcast = json.dumps({"type": "hub_connected"})
                 for c in (connected_clients - {client}):

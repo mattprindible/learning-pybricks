@@ -27,13 +27,17 @@ private class AppCoordinator: ObservableObject {
             .store(in: &cancellables)
         server.$connectionState
             .filter { $0 == .connected }
+            // @Published fires in willSet, before the property is written.
+            // Defer one run-loop so connectionState is .connected when send() reads it.
             .sink { [weak self] _ in
-                guard let self else { return }
-                self.server.send(["type": "phone_connected"])
-                if self.hub.isHubReady {
-                    self.server.send(["type": "hub_connected"])
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.server.connectionState == .connected else { return }
+                    self.server.send(["type": "phone_connected"])
+                    if self.hub.isHubReady {
+                        self.server.send(["type": "hub_connected"])
+                    }
+                    self.phone.emitCurrentState()
                 }
-                self.phone.emitCurrentState()
             }
             .store(in: &cancellables)
         hub.$isHubReady
