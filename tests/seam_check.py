@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-seam_check.py — empirical contract tests for the three interface seams.
+seam_check.py — empirical contract tests for the interface seams.
 
 The test IS the contract. If all pass, the system can function end-to-end.
 Run with server.py running and hub connected via iOS app.
@@ -8,9 +8,10 @@ Run with server.py running and hub connected via iOS app.
   Seam 1: Server WebSocket schema   (server.py ↔ agents/clients)
   Seam 2: Hub stdout convention     (hub/iOS ↔ server) — >prefix, exec handler, terminal markers
   Seam 3: Hub command routing       (server ↔ iOS ↔ hub) — commands reach the hub
-  Seam 4: Hub streaming             (subscribe → hub_stream events arrive with correct schema)
+  Seam 4: Hub streaming             (subscribe → started → hub_stream → unsubscribe → stopped)
+  Seam 5: Server state delivery     (new clients receive cached phone_hardware state on connect)
 
-Usage: uv run python seam_check.py
+Usage: uv run python tests/seam_check.py
 """
 import asyncio
 import json
@@ -138,26 +139,87 @@ async def contract_hub_stdout_schema(ws):
 
 async def contract_hub_imu_stream(ws):
     """
-    Subscribe to hub:imu → server sends stream:start to hub → hub_stream events arrive.
-    Proves: hub: sensor routing, >stream: interception, hub_stream JSON schema.
+    Subscribe to hub:imu → >hub:stream:started:imu → hub_stream frames arrive → unsubscribe → >hub:stream:stopped:imu.
+    Proves: start/stop lifecycle, >stream: interception, hub_stream JSON schema.
     """
     await ws.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
     deadline = asyncio.get_event_loop().time() + HUB_TIMEOUT
+    started_confirmed = False
+    frame = None
+
+    try:
+        while frame is None:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return failed("hub imu stream", "timed out waiting for hub_stream frame")
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            msg = json.loads(raw)
+            if msg.get("type") == "hub_stdout" and ">hub:stream:started:" in msg.get("data", ""):
+                started_confirmed = True
+            elif msg.get("type") == "hub_stream" and msg.get("sensor") == "hub:imu":
+                frame = msg
+    except asyncio.TimeoutError:
+        return failed("hub imu stream", "timed out")
+
+    if not started_confirmed:
+        return failed("hub imu stream", ">hub:stream:started:imu not received before first frame")
+
+    for field in ("pitch", "roll", "heading"):
+        if not isinstance(frame.get(field), float):
+            return failed("hub imu stream", f"field {field!r} missing or not float in {frame}")
+
+    await ws.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
+
     try:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                return failed("hub imu stream", "timed out — no hub_stream event received")
+                return failed("hub imu stream", ">hub:stream:stopped:imu not received after unsubscribe")
             raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
             msg = json.loads(raw)
-            if msg.get("type") == "hub_stream" and msg.get("sensor") == "hub:imu":
-                await ws.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
-                for field in ("pitch", "roll", "heading"):
-                    if not isinstance(msg.get(field), float):
-                        return failed("hub imu stream", f"field {field!r} missing or not float in {msg}")
-                return passed("hub imu stream — subscribe→hub_stream{pitch,roll,heading: float}")
-    except TimeoutError:
-        return failed("hub imu stream", "timed out")
+            if msg.get("type") == "hub_stdout" and ">hub:stream:stopped:" in msg.get("data", ""):
+                break
+    except asyncio.TimeoutError:
+        return failed("hub imu stream", "timed out waiting for stream stopped confirmation")
+
+    return passed("hub imu stream — subscribe→started→hub_stream{pitch,roll,heading}→unsubscribe→stopped")
+
+
+# --- Seam 5: Server state delivery ---
+
+async def contract_phone_state_cache():
+    """
+    Fresh connection receives cached phone_hardware:battery immediately after hello.
+    Proves: server replays last-known phone state to late-joining clients.
+    Opens its own connection so the cached state arrives cold (not replayed from earlier recv).
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            msg = json.loads(raw)
+            if msg.get("type") != "hello":
+                return failed("phone state cache", f"first message was not hello: {msg}")
+
+            deadline = asyncio.get_event_loop().time() + 5
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("phone state cache", "no phone_hardware:battery — is iPhone connected?")
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                msg = json.loads(raw)
+                if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
+                    level = msg.get("level")
+                    state = msg.get("state")
+                    if not isinstance(level, float):
+                        return failed("phone state cache", f"battery level not float: {level!r}")
+                    if state not in {"charging", "full", "unplugged", "unknown"}:
+                        return failed("phone state cache", f"battery state unexpected: {state!r}")
+                    print(f"     phone battery: level={level:.0%} state={state!r}")
+                    return passed("phone state cache — battery replayed to fresh client on connect")
+    except OSError as e:
+        return failed("phone state cache", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("phone state cache", "timed out")
 
 
 async def main():
@@ -175,6 +237,9 @@ async def main():
     except OSError as e:
         print(f"Cannot connect: {e}\nIs server.py running?")
         sys.exit(1)
+
+    # Seam 5 opens its own connection
+    results.append(await contract_phone_state_cache())
 
     print()
     if all(results):

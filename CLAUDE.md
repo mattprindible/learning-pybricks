@@ -69,10 +69,11 @@ if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
     color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
     if color:
         cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
-        await asyncio.gather(*(c.send(cmd) for c in connected_clients))
+        for c in connected_clients:
+            c.send(cmd)
 ```
 
-**Timing**: `emitCurrentState()` fires when the iOS app connects to the server, so agents always receive an initial snapshot. Subscribe before the iOS app connects, or trigger re-emission via a `{"type": "phone_state"}` command (planned).
+**Timing**: `emitCurrentState()` fires when the iOS app connects to the server. `server.py` caches the last-known payload per sensor and replays all cached states to clients that connect after the iOS app — late-joining agents always receive an initial snapshot without needing to coordinate timing.
 
 ## Key design decisions
 
@@ -281,6 +282,36 @@ Multi-output responses: collect lines until `>exec:` prefix appears (that's the 
 
 **Errors:** `>error:unknown:ORIGINAL_COMMAND`
 
+## Testing
+
+```bash
+./tests/run_integration.sh
+```
+
+Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs seam contracts first (fast structural check), then the multi-client hardware suite.
+
+**`tests/seam_check.py`** — contract tests, one per interface seam. The test IS the contract: if all pass, the full stack can function end-to-end.
+
+| Seam | What it proves |
+|------|----------------|
+| 1. Server hello | `{type: "hello", ws_url}` is the first message on connect |
+| 2. Hub exec ok | BLE bridge live, `>` prefix, exec handler, `>exec:ok` terminal |
+| 2. Hub exec error | `>exec:error:MESSAGE` terminal on raised exception |
+| 3. Hub stdout schema | `{type: "hub_stdout", data}` field contract |
+| 4. Hub streaming | subscribe → `>hub:stream:started` → `hub_stream{pitch,roll,heading: float}` → unsubscribe → `>hub:stream:stopped` |
+| 5. Server state delivery | Fresh client receives cached `phone_hardware:battery` immediately after hello |
+
+**`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
+
+| Scenario | What it proves |
+|----------|----------------|
+| A. Queue isolation | Slow client cannot delay fast client; ≥85% frames at target rate |
+| B. Cross-device interleave | `hub_stream` and `phone_hardware` arrive in the same client |
+| C. Command during stream | `hub:light` responds while `hub:imu` streaming; stream continues |
+| D. Crash recovery | Abrupt client close triggers safe-state stop to surviving clients |
+
+**Adding new tests**: add to `seam_check.py` when a new protocol boundary is established (new message type, new field, new subscription behavior). Add to `test_hardware_multi.py` when the behavior requires concurrent clients or timing measurement. Run `./tests/run_integration.sh` before merging any change to `server.py` or `main.py`.
+
 ## Agent integration points
 
 - **Observe hub events**: Connect a WebSocket client to `ws://<server-ip>:8765/`
@@ -293,10 +324,20 @@ Multi-output responses: collect lines until `>exec:` prefix appears (that's the 
 main.py                              Hub program (edit to change hub behavior)
 server.py                            WebSocket + control server
 deploy.sh                            Deploy pipeline
-tilt_drive.py                        Example control script: iPhone tilt → motor speed
-seam_check.py                        Contract tests for all three interface seams
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
+tests/
+  seam_check.py                      Contract tests for all 5 interface seams
+  test_hardware_multi.py             Multi-client + real-hardware integration scenarios
+  test_queue_isolation.py            Per-client queue isolation stress test
+  run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)
+examples/
+  tilt_drive.py                      iPhone tilt → motor speed control script
+  control.py                         Basic hub control example
+  control_exec.py                    Exec-based control example
+  diagnose.py                        Hardware diagnostic script
+scratch/
+  explore_*.py                       Exploratory one-off scripts (not tests)
 bricks/bricks/
   bricksApp.swift                    App entry; owns HubConnectionManager + ServerConnectionManager + PhoneHardwareManager
   ContentView.swift                  UI; wires hub stdout → server.send() and server commands → hub actions
@@ -305,4 +346,4 @@ bricks/bricks/
   PhoneHardware.swift                Phone sensor manager — publishes phone_hardware events to server
 ```
 
-Control scripts (like `tilt_drive.py`) are the natural unit of agent behavior: connect to `ws://localhost:8765/`, subscribe to sensor streams, run logic, send hub commands, clean up on exit. No deploy needed — pure server-side Python.
+Control scripts (like `examples/tilt_drive.py`) are the natural unit of agent behavior: connect to `ws://localhost:8765/`, subscribe to sensor streams, run logic, send hub commands, clean up on exit. No deploy needed — pure server-side Python.
