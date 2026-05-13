@@ -128,6 +128,7 @@ async def _cleanup_subscriptions(client: Client) -> None:
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
+    global hub_connected, phone_connected, bridge_client
     addr = websocket.remote_address
     log.info("Client connected: %s", addr)
     client = Client(websocket)
@@ -153,7 +154,6 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 continue
 
             if msg.get("type") == "phone_connected":
-                global phone_connected, bridge_client
                 phone_connected = True
                 bridge_client = client
                 log.info("Phone connected (bridge: %s)", addr)
@@ -163,7 +163,6 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 continue
 
             if msg.get("type") == "hub_connected":
-                global hub_connected
                 hub_connected = True
                 log.info("Hub connected (via bridge: %s)", addr)
                 broadcast = json.dumps({"type": "hub_connected"})
@@ -242,7 +241,6 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
         await _cleanup_subscriptions(client)
         log.info("Client disconnected: %s", addr)
         if client is bridge_client:
-            global bridge_client, phone_connected, hub_connected
             bridge_client = None
             phone_connected = False
             hub_connected = False
