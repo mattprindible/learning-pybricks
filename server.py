@@ -226,13 +226,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 for c in (connected_clients - {client}):
                     c.send(raw)
 
-            # phone battery state → hub status light
-            if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
-                color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
-                if color:
-                    cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
-                    for c in connected_clients:
-                        c.send(cmd)
+
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
