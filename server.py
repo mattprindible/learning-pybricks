@@ -11,6 +11,9 @@ PORT = 8765
 CONTROL_PORT = 8766
 SERVICE_TYPE = "_bricks._tcp.local."
 SERVICE_NAME = "bricks._bricks._tcp.local."
+SEND_QUEUE_SIZE = 64
+SEND_TIMEOUT = 5.0
+DROP_LOG_INTERVAL = 20
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,39 +32,75 @@ def local_ip() -> str:
 
 
 ip = local_ip()
-connected_clients: set[websockets.ServerConnection] = set()
+# last-known phone_hardware payload per sensor; sent to new clients on connect
+phone_state_cache: dict[str, str] = {}
+
+
+class Client:
+    def __init__(self, ws: websockets.ServerConnection):
+        self.ws = ws
+        self.remote_address = ws.remote_address
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=SEND_QUEUE_SIZE)
+        self._drops = 0
+
+    def send(self, msg: str) -> None:
+        try:
+            self._queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            self._drops += 1
+            if self._drops % DROP_LOG_INTERVAL == 1:
+                log.warning(
+                    "Send queue full for %s (%d total drops)", self.remote_address, self._drops
+                )
+
+    async def _drain(self) -> None:
+        while True:
+            msg = await self._queue.get()
+            if msg is None:
+                return
+            try:
+                await asyncio.wait_for(self.ws.send(msg), timeout=SEND_TIMEOUT)
+            except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                return
+
+
+connected_clients: set[Client] = set()
 # sensor name → set of subscribed clients; key present only while at least one subscriber exists
-subscribers: dict[str, set[websockets.ServerConnection]] = {}
+subscribers: dict[str, set[Client]] = {}
 
 
 async def _phone_command(command: str) -> None:
     msg = json.dumps({"target": "phone", "command": command})
-    if connected_clients:
-        await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+    for c in connected_clients.copy():
+        c.send(msg)
 
 
 async def _hub_command(command: str) -> None:
     msg = json.dumps({"target": "hub", "data": command})
-    if connected_clients:
-        await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+    for c in connected_clients.copy():
+        c.send(msg)
 
 
-async def _subscribe(websocket: websockets.ServerConnection, sensor: str) -> None:
+async def _subscribe(client: Client, sensor: str) -> None:
     first = sensor not in subscribers
-    subscribers.setdefault(sensor, set()).add(websocket)
+    subscribers.setdefault(sensor, set()).add(client)
     if first:
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:start:{sensor[4:]}:100")
         else:
             await _phone_command(f"start_{sensor}")
-        log.info("Started %s stream (first subscriber: %s)", sensor, websocket.remote_address)
+        log.info("Started %s stream (first subscriber: %s)", sensor, client.remote_address)
 
 
-async def _unsubscribe(websocket: websockets.ServerConnection, sensor: str) -> None:
+async def _unsubscribe(client: Client, sensor: str) -> None:
     subs = subscribers.get(sensor)
     if not subs:
         return
-    subs.discard(websocket)
+    subs.discard(client)
     if not subs:
         del subscribers[sensor]
         if sensor.startswith("hub:"):
@@ -71,18 +110,22 @@ async def _unsubscribe(websocket: websockets.ServerConnection, sensor: str) -> N
         log.info("Stopped %s stream (no subscribers)", sensor)
 
 
-async def _cleanup_subscriptions(websocket: websockets.ServerConnection) -> None:
+async def _cleanup_subscriptions(client: Client) -> None:
     for sensor in list(subscribers):
-        if websocket in subscribers.get(sensor, set()):
-            await _unsubscribe(websocket, sensor)
+        if client in subscribers.get(sensor, set()):
+            await _unsubscribe(client, sensor)
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
     addr = websocket.remote_address
     log.info("Client connected: %s", addr)
-    connected_clients.add(websocket)
+    client = Client(websocket)
+    drain_task = asyncio.create_task(client._drain())
+    connected_clients.add(client)
     try:
-        await websocket.send(json.dumps({"type": "hello", "ws_url": f"ws://{ip}:{PORT}/"}))
+        client.send(json.dumps({"type": "hello", "ws_url": f"ws://{ip}:{PORT}/"}))
+        for cached in phone_state_cache.values():
+            client.send(cached)
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
@@ -96,13 +139,13 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             if msg.get("type") == "subscribe":
                 sensor = msg.get("sensor", "")
                 if sensor:
-                    await _subscribe(websocket, sensor)
+                    await _subscribe(client, sensor)
                 continue
 
             if msg.get("type") == "unsubscribe":
                 sensor = msg.get("sensor", "")
                 if sensor:
-                    await _unsubscribe(websocket, sensor)
+                    await _unsubscribe(client, sensor)
                 continue
 
             # hub_stdout >stream: lines — parse and route to hub: subscribers
@@ -120,37 +163,44 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                             except ValueError:
                                 payload[k] = v
                     raw_json = json.dumps(payload)
-                    targets = subscribers.get(sensor_key, set()).copy()
-                    if targets:
-                        await asyncio.gather(*(c.send(raw_json) for c in targets))
+                    for c in subscribers.get(sensor_key, set()).copy():
+                        c.send(raw_json)
                     continue
 
-            # phone_hardware: route to sensor subscribers if any; otherwise broadcast (event-driven)
+            # phone_hardware: cache latest state, then route to subscribers or broadcast
             if msg.get("type") == "phone_hardware":
                 sensor = msg.get("sensor", "")
-                targets = subscribers[sensor].copy() if sensor in subscribers else connected_clients - {websocket}
-                if targets:
-                    await asyncio.gather(*(c.send(raw) for c in targets))
+                if sensor:
+                    phone_state_cache[sensor] = raw
+                targets = subscribers[sensor].copy() if sensor in subscribers else connected_clients - {client}
+                for c in targets:
+                    c.send(raw)
             else:
-                others = connected_clients - {websocket}
-                if others:
-                    await asyncio.gather(*(c.send(raw) for c in others))
+                for c in (connected_clients - {client}):
+                    c.send(raw)
 
             # phone battery state → hub status light
             if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
                 color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
                 if color:
                     cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
-                    await asyncio.gather(*(c.send(cmd) for c in connected_clients))
+                    for c in connected_clients:
+                        c.send(cmd)
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
-        connected_clients.discard(websocket)
-        await _cleanup_subscriptions(websocket)
+        connected_clients.discard(client)
+        drain_task.cancel()
+        try:
+            await drain_task
+        except asyncio.CancelledError:
+            pass
+        await _cleanup_subscriptions(client)
         log.info("Client disconnected: %s", addr)
         if connected_clients:
             stop = json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"})
-            await asyncio.gather(*(c.send(stop) for c in connected_clients.copy()))
+            for c in connected_clients.copy():
+                c.send(stop)
             log.info("Sent safe-state stop to %d remaining client(s)", len(connected_clients))
 
 
@@ -161,7 +211,8 @@ async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         if cmd == "hub_disconnect":
             if connected_clients:
                 msg = json.dumps({"type": "hub_disconnect"})
-                await asyncio.gather(*(c.send(msg) for c in connected_clients.copy()))
+                for c in connected_clients.copy():
+                    c.send(msg)
                 log.info("Sent hub_disconnect to %d client(s)", len(connected_clients))
             else:
                 log.info("hub_disconnect received but no clients connected")
