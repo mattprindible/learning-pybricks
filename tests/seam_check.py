@@ -10,6 +10,7 @@ Run with server.py running and hub connected via iOS app.
   Seam 3: Hub command routing       (server ↔ iOS ↔ hub) — commands reach the hub
   Seam 4: Hub streaming             (subscribe → started → hub_stream → unsubscribe → stopped)
   Seam 5: Server state delivery     (new clients receive cached phone_hardware state on connect)
+  Seam 6: Connectivity state        (hello includes hub_connected and phone_connected booleans)
 
 Usage: uv run python tests/seam_check.py
 """
@@ -222,6 +223,36 @@ async def contract_phone_state_cache():
         return failed("phone state cache", "timed out")
 
 
+# --- Seam 6: Connectivity state ---
+
+async def contract_connectivity_state():
+    """
+    Fresh hello includes hub_connected (bool) and phone_connected (bool).
+    Both must be present; values may be True or False depending on hardware state.
+    Opens its own connection so it reads a cold hello with current state.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            msg = json.loads(raw)
+    except OSError as e:
+        return failed("connectivity state", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("connectivity state", "timed out waiting for hello")
+
+    if msg.get("type") != "hello":
+        return failed("connectivity state", f"first message was not hello: {msg}")
+    if not isinstance(msg.get("hub_connected"), bool):
+        return failed("connectivity state", f"hub_connected missing or not bool: {msg.get('hub_connected')!r}")
+    if not isinstance(msg.get("phone_connected"), bool):
+        return failed("connectivity state", f"phone_connected missing or not bool: {msg.get('phone_connected')!r}")
+
+    hc = msg["hub_connected"]
+    pc = msg["phone_connected"]
+    print(f"     hub_connected={hc} phone_connected={pc}")
+    return passed("connectivity state — hello includes hub_connected + phone_connected booleans")
+
+
 async def main():
     print(f"\nConnecting to {WS_URL} ...\n")
     try:
@@ -238,8 +269,9 @@ async def main():
         print(f"Cannot connect: {e}\nIs server.py running?")
         sys.exit(1)
 
-    # Seam 5 opens its own connection
+    # Seams 5 and 6 open their own connections
     results.append(await contract_phone_state_cache())
+    results.append(await contract_connectivity_state())
 
     print()
     if all(results):

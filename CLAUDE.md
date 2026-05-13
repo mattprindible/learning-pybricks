@@ -75,6 +75,33 @@ if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
 
 **Timing**: `emitCurrentState()` fires when the iOS app connects to the server. `server.py` caches the last-known payload per sensor and replays all cached states to clients that connect after the iOS app — late-joining agents always receive an initial snapshot without needing to coordinate timing.
 
+## Connectivity state
+
+The server tracks the live state of both hardware devices and includes it in every `hello` message:
+
+```json
+{"type": "hello", "ws_url": "ws://...", "hub_connected": true, "phone_connected": true}
+```
+
+**Events** — broadcast to all non-bridge clients as state changes:
+```json
+{"type": "phone_connected"}
+{"type": "phone_disconnected"}
+{"type": "hub_connected"}
+{"type": "hub_disconnected"}
+```
+
+**iOS sends on server connect** (from `AppCoordinator`):
+1. `{"type": "phone_connected"}` — identifies this client as the bridge
+2. `{"type": "hub_connected"}` — only if `hub.isHubReady == true` at that moment
+3. `phone.emitCurrentState()` — replays cached sensor state
+
+**iOS sends on `isHubReady` change**: `hub_connected` when `>ready` arrives on hub stdout; `hub_disconnected` when BLE disconnects.
+
+**`hub_connected` is tied to `>ready`**, not BLE connection — because the dispatch loop isn't accepting commands until `main.py` finishes startup. On hub reconnect, server calls `_recover_subscriptions()` to re-send `hub:stream:start:NAME:INTERVAL` for any active subscribers.
+
+**Bridge identity**: the server marks the client that sends `phone_connected` as `bridge_client`. When that client disconnects, the server clears both `hub_connected` and `phone_connected` and broadcasts `hub_disconnected` + `phone_disconnected` to remaining clients.
+
 ## Key design decisions
 
 **Auto-start via STATUS_REPORT**: On BLE subscribe, the hub sends a STATUS_REPORT. iOS reads the USER_PROGRAM_RUNNING flag and only sends START if the program isn't already running. This avoids a GATT BUSY error (0x81) that would disrupt the notification pipeline.

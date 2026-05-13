@@ -27,7 +27,21 @@ private class AppCoordinator: ObservableObject {
             .store(in: &cancellables)
         server.$connectionState
             .filter { $0 == .connected }
-            .sink { [weak self] _ in self?.phone.emitCurrentState() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.server.send(["type": "phone_connected"])
+                if self.hub.isHubReady {
+                    self.server.send(["type": "hub_connected"])
+                }
+                self.phone.emitCurrentState()
+            }
+            .store(in: &cancellables)
+        hub.$isHubReady
+            .dropFirst()
+            .sink { [weak self] ready in
+                guard let self, self.server.connectionState == .connected else { return }
+                self.server.send(["type": ready ? "hub_connected" : "hub_disconnected"])
+            }
             .store(in: &cancellables)
     }
 }

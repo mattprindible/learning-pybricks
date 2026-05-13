@@ -35,6 +35,10 @@ ip = local_ip()
 # last-known phone_hardware payload per sensor; sent to new clients on connect
 phone_state_cache: dict[str, str] = {}
 
+hub_connected: bool = False
+phone_connected: bool = False
+bridge_client = None  # the Client that is the iOS bridge
+
 
 class Client:
     def __init__(self, ws: websockets.ServerConnection):
@@ -77,6 +81,13 @@ async def _phone_command(command: str) -> None:
     msg = json.dumps({"target": "phone", "command": command})
     for c in connected_clients.copy():
         c.send(msg)
+
+
+async def _recover_subscriptions() -> None:
+    for sensor in list(subscribers):
+        if sensor.startswith("hub:"):
+            await _hub_command(f"hub:stream:start:{sensor[4:]}:100")
+            log.info("Recovered stream subscription: %s", sensor)
 
 
 async def _hub_command(command: str) -> None:
@@ -123,7 +134,12 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
     drain_task = asyncio.create_task(client._drain())
     connected_clients.add(client)
     try:
-        client.send(json.dumps({"type": "hello", "ws_url": f"ws://{ip}:{PORT}/"}))
+        client.send(json.dumps({
+            "type": "hello",
+            "ws_url": f"ws://{ip}:{PORT}/",
+            "hub_connected": hub_connected,
+            "phone_connected": phone_connected,
+        }))
         for cached in phone_state_cache.values():
             client.send(cached)
         async for raw in websocket:
@@ -134,6 +150,34 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 continue
             log.info("Received from %s: %s", addr, msg)
             if msg.get("type") == "hub_stdout" and not msg.get("data", "").startswith(">"):
+                continue
+
+            if msg.get("type") == "phone_connected":
+                global phone_connected, bridge_client
+                phone_connected = True
+                bridge_client = client
+                log.info("Phone connected (bridge: %s)", addr)
+                broadcast = json.dumps({"type": "phone_connected"})
+                for c in (connected_clients - {client}):
+                    c.send(broadcast)
+                continue
+
+            if msg.get("type") == "hub_connected":
+                global hub_connected
+                hub_connected = True
+                log.info("Hub connected (via bridge: %s)", addr)
+                broadcast = json.dumps({"type": "hub_connected"})
+                for c in (connected_clients - {client}):
+                    c.send(broadcast)
+                await _recover_subscriptions()
+                continue
+
+            if msg.get("type") == "hub_disconnected":
+                hub_connected = False
+                log.info("Hub disconnected (via bridge: %s)", addr)
+                broadcast = json.dumps({"type": "hub_disconnected"})
+                for c in (connected_clients - {client}):
+                    c.send(broadcast)
                 continue
 
             if msg.get("type") == "subscribe":
@@ -197,6 +241,15 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             pass
         await _cleanup_subscriptions(client)
         log.info("Client disconnected: %s", addr)
+        if client is bridge_client:
+            global bridge_client, phone_connected, hub_connected
+            bridge_client = None
+            phone_connected = False
+            hub_connected = False
+            for c in connected_clients.copy():
+                c.send(json.dumps({"type": "hub_disconnected"}))
+                c.send(json.dumps({"type": "phone_disconnected"}))
+            log.info("Bridge disconnected — broadcast hub_disconnected + phone_disconnected")
         if connected_clients:
             stop = json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"})
             for c in connected_clients.copy():

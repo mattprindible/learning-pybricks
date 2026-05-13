@@ -29,6 +29,7 @@ enum HubConnectionState: Equatable {
 class HubConnectionManager: NSObject, ObservableObject {
     @Published var connectionState: HubConnectionState = .searching
     @Published var hubName: String?
+    @Published var isHubReady: Bool = false
     let stdout = PassthroughSubject<String, Never>()
 
     private var central: CBCentralManager!
@@ -161,6 +162,7 @@ extension HubConnectionManager: CBCentralManagerDelegate {
         commandChar = nil
         didStartProgram = false
         pendingRelease = false
+        isHubReady = false
         stdoutBuffer = Data()
         if releasingForDeploy {
             log.info("Holding reconnect — BLE released for deploy")
@@ -228,6 +230,7 @@ extension HubConnectionManager: CBPeripheralDelegate {
                     !line.isEmpty else { continue }
                 log.info("Hub stdout: \(line)")
                 stdout.send(line)
+                if line == ">ready" { isHubReady = true }
             }
         default:
             break
