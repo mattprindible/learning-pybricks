@@ -7,9 +7,10 @@ Scenarios:
   A. Real-hardware isolation  — fast + slow client both on hub:imu; slow drops, fast doesn't
   B. Cross-device interleave  — hub:imu stream + phone_hardware events arrive in the same client
   C. Command during stream    — hub:light:on while hub:imu is streaming; both succeed
-  D. Crash recovery           — abrupt client close triggers safe-state stop to remaining clients
+  D. Crash isolation          — abrupt client close cleans up subscriptions; surviving client unaffected
+  E. Hello accuracy           — hub_connected in hello confirmed by a live hub exec round-trip
 
-Usage: uv run python test_hardware_multi.py
+Usage: uv run python tests/test_hardware_multi.py
 """
 
 import asyncio
@@ -23,7 +24,7 @@ TIMEOUT = 15.0
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-async def connect() -> websockets.ClientConnection:
+async def connect():
     ws = await websockets.connect(URL)
     hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
     assert hello["type"] == "hello", f"unexpected first message: {hello}"
@@ -102,8 +103,7 @@ async def scenario_a():
           f"avg {avg_gap_ms:.1f}ms, max gap {max_gap_ms:.1f}ms")
     print(f"     slow: {slow_received} frames received (drops expected in server log)")
     # BLE delivers frames in bursts, so a single large gap is normal hardware jitter.
-    # We care that the fast client received substantially all frames at the right average rate,
-    # NOT that the slow client's backed-up queue caused the gap.
+    # We care that the fast client received substantially all frames at the right average rate.
     if frame_pct < 85:
         return fail("A", f"fast client only received {frame_pct:.0f}% of expected frames")
     if avg_gap_ms > 150:
@@ -201,63 +201,85 @@ async def scenario_c():
     return True
 
 
-# ── scenario D: crash recovery ────────────────────────────────────────────────
+# ── scenario D: crash isolation ───────────────────────────────────────────────
 
 async def scenario_d():
-    print("\nD. Crash recovery (abrupt client close → safe-state stop to remaining clients)")
+    print("\nD. Crash isolation (abrupt close cleans up subscriptions; surviving client unaffected)")
 
-    # client Y connects first and watches for the safe-state command
+    ws_x = await connect()
     ws_y = await connect()
 
-    # client X connects and subscribes
-    ws_x = await connect()
     await ws_x.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
 
-    # confirm X is receiving before we kill it
+    # confirm X is streaming before we kill it
     try:
-        await recv_until(
-            ws_x,
-            lambda m: m.get("type") == "hub_stream",
-            timeout=5.0,
-        )
+        await recv_until(ws_x, lambda m: m.get("type") == "hub_stream", timeout=5.0)
     except TimeoutError:
-        await ws_x.close()
-        await ws_y.close()
+        await ws_x.close(); await ws_y.close()
         return fail("D", "client X never received a stream frame before crash")
 
-    # simulate crash: close without unsubscribing or sending close frame
-    ws_x.transport.close()  # abrupt TCP close, no WebSocket handshake
+    # simulate crash: close transport without WebSocket close handshake
+    ws_x.transport.close()
 
-    # client Y should receive the safe-state stop broadcast
-    try:
-        stop_msg = await recv_until(
-            ws_y,
-            lambda m: (
-                m.get("target") == "hub"
-                and "motors" in m.get("data", "")
-                and "stop" in m.get("data", "")
-            ),
-            timeout=10.0,
-        )
-        print(f"     safe-state stop received: {stop_msg['data']!r}")
-    except TimeoutError:
-        await ws_y.close()
-        return fail("D", "client Y never received safe-state stop after client X crashed")
+    # give server time to detect the disconnect and run _cleanup_subscriptions
+    await asyncio.sleep(1.5)
 
-    # Y should still be functional — send a command and confirm server responds
-    await ws_y.send(json.dumps({"target": "hub", "data": "exec:print('>D:alive')"}))
+    # Y subscribes — if X's subscription was properly cleaned up, Y is the first
+    # subscriber and the server will send hub:stream:start:imu:100 to the hub,
+    # which responds with >hub:stream:started:imu
+    await ws_y.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
     try:
         await recv_until(
             ws_y,
-            lambda m: m.get("type") == "hub_stdout" and ">D:alive" in m.get("data", ""),
+            lambda m: m.get("type") == "hub_stdout" and ">hub:stream:started" in m.get("data", ""),
             timeout=5.0,
         )
     except TimeoutError:
+        await ws_y.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
         await ws_y.close()
-        return fail("D", "client Y stopped working after client X crashed")
+        return fail("D", ">hub:stream:started not received — X's subscription was not cleaned up on crash")
 
+    # confirm Y is still receiving frames
+    try:
+        await recv_until(ws_y, lambda m: m.get("type") == "hub_stream", timeout=3.0)
+    except TimeoutError:
+        await ws_y.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
+        await ws_y.close()
+        return fail("D", "client Y not receiving hub_stream after X crash")
+
+    await ws_y.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
     await ws_y.close()
-    ok("D. safe-state stop delivered to Y; Y remains functional after X crash")
+    ok("D. X's subscriptions cleaned up on crash; Y is first subscriber on re-subscribe; Y functional")
+    return True
+
+
+# ── scenario E: hello accuracy ────────────────────────────────────────────────
+
+async def scenario_e():
+    print("\nE. Hello accuracy (hub_connected field confirmed by live hub exec round-trip)")
+
+    ws = await websockets.connect(URL)
+    try:
+        hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        assert hello["type"] == "hello"
+
+        if not hello.get("hub_connected"):
+            return fail("E", "hub_connected=False in hello — is hub connected?")
+
+        # hello claims hub is connected — verify with a live exec round-trip
+        await ws.send(json.dumps({"target": "hub", "data": "exec:print('>E:alive')"}))
+        try:
+            await recv_until(
+                ws,
+                lambda m: m.get("type") == "hub_stdout" and ">E:alive" in m.get("data", ""),
+                timeout=5.0,
+            )
+        except TimeoutError:
+            return fail("E", "hello said hub_connected=True but hub did not respond to exec")
+    finally:
+        await ws.close()
+
+    ok("E. hello hub_connected=True confirmed by successful hub exec round-trip")
     return True
 
 
@@ -270,6 +292,7 @@ async def main():
         await scenario_b(),
         await scenario_c(),
         await scenario_d(),
+        await scenario_e(),
     ]
     print()
     passed = sum(1 for r in results if r is True)

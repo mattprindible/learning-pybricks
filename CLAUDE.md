@@ -327,6 +327,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | 3. Hub stdout schema | `{type: "hub_stdout", data}` field contract |
 | 4. Hub streaming | subscribe → `>hub:stream:started` → `hub_stream{pitch,roll,heading: float}` → unsubscribe → `>hub:stream:stopped` |
 | 5. Server state delivery | Fresh client receives cached `phone_hardware:battery` immediately after hello |
+| 6. Connectivity state | `hello` includes `hub_connected` and `phone_connected` booleans |
 
 **`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
 
@@ -335,7 +336,8 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | A. Queue isolation | Slow client cannot delay fast client; ≥85% frames at target rate |
 | B. Cross-device interleave | `hub_stream` and `phone_hardware` arrive in the same client |
 | C. Command during stream | `hub:light` responds while `hub:imu` streaming; stream continues |
-| D. Crash recovery | Abrupt client close triggers safe-state stop to surviving clients |
+| D. Crash isolation | Abrupt client close cleans up subscriptions; surviving client is first subscriber on re-subscribe |
+| E. Hello accuracy | `hub_connected=True` in hello confirmed by live hub exec round-trip |
 
 **Adding new tests**: add to `seam_check.py` when a new protocol boundary is established (new message type, new field, new subscription behavior). Add to `test_hardware_multi.py` when the behavior requires concurrent clients or timing measurement. Run `./tests/run_integration.sh` before merging any change to `server.py` or `main.py`.
 
@@ -354,7 +356,7 @@ deploy.sh                            Deploy pipeline
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 tests/
-  seam_check.py                      Contract tests for all 5 interface seams
+  seam_check.py                      Contract tests for all 6 interface seams
   test_hardware_multi.py             Multi-client + real-hardware integration scenarios
   test_queue_isolation.py            Per-client queue isolation stress test
   run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)
