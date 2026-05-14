@@ -328,6 +328,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | 4. Hub streaming | subscribe → `>hub:stream:started` → `hub_stream{pitch,roll,heading: float}` → unsubscribe → `>hub:stream:stopped` |
 | 5. Server state delivery | Fresh client receives cached `phone_hardware:battery` immediately after hello |
 | 6. Connectivity state | `hello` includes `hub_connected` and `phone_connected` booleans |
+| 7. Connectivity broadcast | `hub_disconnected`/`hub_connected` events reach non-sender clients (synthetic injection) |
 
 **`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
 
@@ -356,7 +357,7 @@ deploy.sh                            Deploy pipeline
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 tests/
-  seam_check.py                      Contract tests for all 6 interface seams
+  seam_check.py                      Contract tests for all 7 interface seams
   test_hardware_multi.py             Multi-client + real-hardware integration scenarios
   test_queue_isolation.py            Per-client queue isolation stress test
   run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)

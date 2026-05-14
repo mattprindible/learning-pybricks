@@ -11,6 +11,7 @@ Run with server.py running and hub connected via iOS app.
   Seam 4: Hub streaming             (subscribe → started → hub_stream → unsubscribe → stopped)
   Seam 5: Server state delivery     (new clients receive cached phone_hardware state on connect)
   Seam 6: Connectivity state        (hello includes hub_connected and phone_connected booleans)
+  Seam 7: Connectivity broadcast    (hub_disconnected/hub_connected events reach non-sender clients)
 
 Usage: uv run python tests/seam_check.py
 """
@@ -253,6 +254,62 @@ async def contract_connectivity_state():
     return passed("connectivity state — hello includes hub_connected + phone_connected booleans")
 
 
+async def contract_connectivity_event_broadcast():
+    """
+    hub_disconnected and hub_connected events are broadcast to non-sender clients.
+    Uses synthetic injection — any client can send these events; the server routes
+    them to all other connected clients and updates its own state.
+    Opens its own connections and restores server state when done.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws_obs, \
+                   websockets.connect(WS_URL) as ws_inj:
+            # drain hellos (and any cached phone_hardware state)
+            await asyncio.wait_for(ws_obs.recv(), timeout=5)
+            await asyncio.wait_for(ws_inj.recv(), timeout=5)
+
+            # inject hub_disconnected; observer should receive the broadcast
+            await ws_inj.send(json.dumps({"type": "hub_disconnected"}))
+            got_disconnected = False
+            try:
+                deadline = asyncio.get_event_loop().time() + 3
+                while not got_disconnected:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    raw = await asyncio.wait_for(ws_obs.recv(), timeout=remaining)
+                    if json.loads(raw).get("type") == "hub_disconnected":
+                        got_disconnected = True
+            except asyncio.TimeoutError:
+                pass
+
+            if not got_disconnected:
+                return failed("connectivity broadcast", "hub_disconnected not broadcast to observer")
+
+            # restore: inject hub_connected; observer should receive it
+            await ws_inj.send(json.dumps({"type": "hub_connected"}))
+            got_connected = False
+            try:
+                deadline = asyncio.get_event_loop().time() + 3
+                while not got_connected:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    raw = await asyncio.wait_for(ws_obs.recv(), timeout=remaining)
+                    if json.loads(raw).get("type") == "hub_connected":
+                        got_connected = True
+            except asyncio.TimeoutError:
+                pass
+
+            if not got_connected:
+                return failed("connectivity broadcast", "hub_connected not broadcast to observer")
+
+    except OSError as e:
+        return failed("connectivity broadcast", f"connection failed: {e}")
+
+    return passed("connectivity broadcast — hub_disconnected + hub_connected reach non-sender clients")
+
+
 async def main():
     print(f"\nConnecting to {WS_URL} ...\n")
     try:
@@ -269,9 +326,10 @@ async def main():
         print(f"Cannot connect: {e}\nIs server.py running?")
         sys.exit(1)
 
-    # Seams 5 and 6 open their own connections
+    # Seams 5, 6, and 7 open their own connections
     results.append(await contract_phone_state_cache())
     results.append(await contract_connectivity_state())
+    results.append(await contract_connectivity_event_broadcast())
 
     print()
     if all(results):
