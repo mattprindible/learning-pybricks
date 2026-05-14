@@ -92,7 +92,14 @@ async def _recover_subscriptions() -> None:
     for sensor in list(subscribers):
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:start:{sensor[4:]}:100")
-            log.info("Recovered stream subscription: %s", sensor)
+            log.info("Recovered hub stream subscription: %s", sensor)
+
+
+async def _recover_phone_subscriptions() -> None:
+    for sensor in list(subscribers):
+        if not sensor.startswith("hub:"):
+            await _phone_command(f"start_{sensor}")
+            log.info("Recovered phone stream subscription: %s", sensor)
 
 
 async def _hub_command(command: str) -> None:
@@ -173,6 +180,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 broadcast = json.dumps({"type": "phone_connected"})
                 for c in (connected_clients - {client}):
                     c.send(broadcast)
+                await _recover_phone_subscriptions()
                 continue
 
             if msg.get("type") == "hub_connected":
