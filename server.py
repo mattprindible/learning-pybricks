@@ -9,6 +9,7 @@ from zeroconf import ServiceInfo
 
 PORT = 8765
 CONTROL_PORT = 8766
+SERVER_VERSION = 1
 SERVICE_TYPE = "_bricks._tcp.local."
 SERVICE_NAME = "bricks._bricks._tcp.local."
 SEND_QUEUE_SIZE = 64
@@ -159,6 +160,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
     try:
         client.send(json.dumps({
             "type": "hello",
+            "version": SERVER_VERSION,
             "ws_url": f"ws://{ip}:{PORT}/",
             "hub_connected": hub_connected,
             "phone_connected": phone_connected,
@@ -204,6 +206,11 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 for c in (connected_clients - {client}):
                     c.send(broadcast)
                 await _recover_subscriptions()
+                await _hub_command(
+                    "exec:v=hub.battery.voltage();i=hub.battery.current();"
+                    "c=hub.charger.connected();"
+                    "print('>hub_battery:voltage='+str(v)+':current='+str(i)+':charger='+str(c))"
+                )
                 continue
 
             if msg.get("type") == "hub_disconnected":

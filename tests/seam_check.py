@@ -75,8 +75,10 @@ async def contract_server_hello(ws):
         return failed("server hello", f"type={msg.get('type')!r}, expected 'hello'")
     if "ws_url" not in msg:
         return failed("server hello", "missing ws_url field")
+    if not isinstance(msg.get("version"), int):
+        return failed("server hello", f"version missing or not int: {msg.get('version')!r}")
 
-    return passed("server hello — {type: 'hello', ws_url}")
+    return passed(f"server hello — {{type: 'hello', ws_url, version: {msg['version']}}}")
 
 
 # --- Seam 2: Hub stdout convention ---

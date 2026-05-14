@@ -94,8 +94,10 @@ if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
 The server tracks the live state of both hardware devices and includes it in every `hello` message:
 
 ```json
-{"type": "hello", "ws_url": "ws://...", "hub_connected": true, "phone_connected": true}
+{"type": "hello", "version": 1, "ws_url": "ws://...", "hub_connected": true, "phone_connected": true}
 ```
+
+**`version`** — monotonic integer, incremented when the bus protocol gains new capabilities or breaking changes. Agents can gate behaviour on `hello["version"] >= N`. Current version: **1**.
 
 **Events** — broadcast to all non-bridge clients as state changes:
 ```json
