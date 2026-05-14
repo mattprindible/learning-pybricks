@@ -50,85 +50,13 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 - Command `0x00` = STOP_USER_PROGRAM
 - Command `0x01` = START_USER_PROGRAM
 
-## Hub hardware events
-
-The hub emits unconditional system-level events independently of the subscribe/stream system. These are broadcast to all connected clients and cached for late-joining clients (like `phone_hardware`).
-
-**Hub battery** — emitted once at startup (before `>ready`), then unconditionally every 30s:
-```json
-{"type": "hub_battery", "voltage": 8200, "current": 150, "charger": false}
-```
-- `voltage`: mV (Li-ion range roughly 6400–8400mV)
-- `current`: mA (draw at time of reading; varies with motor load)
-- `charger`: `true` if charging cable connected
-
-**Design rationale**: Hub battery uses unconditional emission (like phone battery) rather than the subscribe/stream model (like hub:imu) because battery health is relevant to any agent on the bus — it's platform telemetry, not agent-specific data.
-
-## Phone hardware protocol
-
-`PhoneHardwareManager` (iOS) publishes phone sensor events to the server as JSON. Events arrive at the server as `phone_hardware` messages and are broadcast to all WebSocket clients.
-
-**Battery** — emitted on server connect and on any change:
-```json
-{"type": "phone_hardware", "sensor": "battery", "level": 0.87, "state": "unplugged"}
-```
-- `level`: 0.0–1.0 (`-1.0` if unknown)
-- `state`: `"charging"` | `"full"` | `"unplugged"` | `"unknown"`
-
-**Camera** — subscribe-only stream; not cached. Subscribe with `{"type": "subscribe", "sensor": "camera"}`:
-```json
-{"type": "phone_hardware", "sensor": "camera", "frame": "<base64 JPEG>", "width": 640, "height": 480, "timestamp_ms": 1234567890123}
-```
-- `frame`: base64-encoded JPEG at quality 0.5
-- `width` / `height`: pixels (640×480 at `.vga640x480` preset)
-- `timestamp_ms`: CMSampleBuffer presentation timestamp in milliseconds
-- Rear camera, fixed 10 fps, landscape-right orientation (0° rotation, natural sensor orientation)
-- Server does **not** cache camera frames — they are stream-only, never replayed to new clients
-
-**Adding new phone sensors**: add a method to `PhoneHardwareManager` that calls `events.send(...)` with `type: "phone_hardware"` and a `sensor` key. Wire notifications or timers in `init()`. No server or hub changes needed. If the sensor is high-frequency and should never be replayed as a stale snapshot, add its name to `STREAM_ONLY_SENSORS` in `server.py`.
-
-**Composition pattern**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response. Example — battery state drives hub light color:
-```python
-if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
-    color = {"charging": "GREEN", "full": "GREEN", "unplugged": "RED"}.get(msg.get("state"))
-    if color:
-        cmd = json.dumps({"target": "hub", "data": f"hub:light:on:{color}"})
-        for c in connected_clients:
-            c.send(cmd)
-```
-
-**Timing**: `emitCurrentState()` fires when the iOS app connects to the server. `server.py` caches the last-known payload per sensor (excluding `STREAM_ONLY_SENSORS`) and replays all cached states to clients that connect after the iOS app — late-joining agents always receive an initial snapshot without needing to coordinate timing.
-
-## Connectivity state
-
-The server tracks the live state of both hardware devices and includes it in every `hello` message:
-
-```json
-{"type": "hello", "version": 1, "ws_url": "ws://...", "hub_connected": true, "phone_connected": true}
-```
-
-**`version`** — monotonic integer, incremented when the bus protocol gains new capabilities or breaking changes. Agents can gate behaviour on `hello["version"] >= N`. Current version: **1**.
-
-**Events** — broadcast to all non-bridge clients as state changes:
-```json
-{"type": "phone_connected"}
-{"type": "phone_disconnected"}
-{"type": "hub_connected"}
-{"type": "hub_disconnected"}
-```
-
-**iOS sends on server connect** (from `AppCoordinator`):
-1. `{"type": "phone_connected"}` — identifies this client as the bridge
-2. `{"type": "hub_connected"}` — only if `hub.isHubReady == true` at that moment
-3. `phone.emitCurrentState()` — replays cached sensor state
-
-**iOS sends on `isHubReady` change**: `hub_connected` when `>ready` arrives on hub stdout; `hub_disconnected` when BLE disconnects.
-
-**`hub_connected` is tied to `>ready`**, not BLE connection — because the dispatch loop isn't accepting commands until `main.py` finishes startup. On hub reconnect, server calls `_recover_subscriptions()` to re-send `hub:stream:start:NAME:INTERVAL` for any active subscribers.
-
-**Bridge identity**: the server marks the client that sends `phone_connected` as `bridge_client`. When that client disconnects, the server clears both `hub_connected` and `phone_connected` and broadcasts `hub_disconnected` + `phone_disconnected` to remaining clients.
-
 ## Key design decisions
+
+**`hub_connected` is tied to `>ready`**, not BLE connection — because the dispatch loop isn't accepting commands until `main.py` finishes startup. On hub reconnect, server calls `_recover_subscriptions()` to re-send active stream subscriptions.
+
+**Open phone sensor key**: Any `sensor` value works in `phone_hardware` messages. Add a new sensor to `PhoneHardwareManager.handleCommand()` and call `events.send(...)` with `type: "phone_hardware"` and a `sensor` key — no server changes needed. For high-frequency sensors that should never be cached as stale snapshots (like camera), add the name to `STREAM_ONLY_SENSORS` in `server.py`.
+
+**Phone→hub composition**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response — see `examples/battery_light.py` for a working example.
 
 **Auto-start via STATUS_REPORT**: On BLE subscribe, the hub sends a STATUS_REPORT. iOS reads the USER_PROGRAM_RUNNING flag and only sends START if the program isn't already running. This avoids a GATT BUSY error (0x81) that would disrupt the notification pipeline.
 
@@ -346,32 +274,7 @@ Multi-output responses: collect lines until `>exec:` prefix appears (that's the 
 
 Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs seam contracts first (fast structural check), then the multi-client hardware suite.
 
-**`tests/seam_check.py`** — contract tests, one per interface seam. The test IS the contract: if all pass, the full stack can function end-to-end.
-
-| Seam | What it proves |
-|------|----------------|
-| 1. Server hello | `{type: "hello", ws_url}` is the first message on connect |
-| 2. Hub exec ok | BLE bridge live, `>` prefix, exec handler, `>exec:ok` terminal |
-| 2. Hub exec error | `>exec:error:MESSAGE` terminal on raised exception |
-| 3. Hub stdout schema | `{type: "hub_stdout", data}` field contract |
-| 4. Hub streaming | subscribe → `>hub:stream:started` → `hub_stream{pitch,roll,heading: float}` → unsubscribe → `>hub:stream:stopped` |
-| 5. Server state delivery | Fresh client receives cached `phone_hardware:battery` immediately after hello |
-| 6. Connectivity state | `hello` includes `hub_connected` and `phone_connected` booleans |
-| 7. Connectivity broadcast | `hub_disconnected`/`hub_connected` events reach non-sender clients (synthetic injection) |
-| 8. Hub battery telemetry | `hub_battery` cached and replayed to fresh clients; `voltage`/`current`/`charger` fields present |
-| 9. Camera stream | subscribe → `phone_hardware:camera{frame,width,height,timestamp_ms}` → JPEG magic verified → unsubscribe |
-| 10. Camera not cached | camera frames bypass `phone_state_cache`; non-subscribers don't receive frames (`STREAM_ONLY_SENSORS`) |
-
-**`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
-
-| Scenario | What it proves |
-|----------|----------------|
-| A. Queue isolation | Slow client cannot delay fast client; ≥85% frames at target rate |
-| B. Cross-device interleave | `hub_stream` and `phone_hardware` arrive in the same client |
-| C. Command during stream | `hub:light` responds while `hub:imu` streaming; stream continues |
-| D. Crash isolation | Abrupt client close cleans up subscriptions; surviving client is first subscriber on re-subscribe |
-| E. Hello accuracy | `hub_connected=True` in hello confirmed by live hub exec round-trip |
-| F. Subscription recovery | Hub reconnect triggers `_recover_subscriptions()`; active subscribers receive frames without re-subscribing |
+`uv run python tests/seam_check.py` alone answers "Is the system working, and what does it do?" — its pass output IS the documentation.
 
 **Adding new tests**: add to `seam_check.py` when a new protocol boundary is established (new message type, new field, new subscription behavior). Add to `test_hardware_multi.py` when the behavior requires concurrent clients or timing measurement. Run `./tests/run_integration.sh` before merging any change to `server.py` or `main.py`.
 
@@ -380,34 +283,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 - **Observe hub events**: Connect a WebSocket client to `ws://<server-ip>:8765/`
 - **Trigger deploy**: Run `./deploy.sh`
 - **Stop hub program only**: Send `hub_disconnect\n` to `localhost:8766`
-
-## Agent contract
-
-Every agent connecting to the bus should follow this sequence (`examples/agent_template.py` demonstrates all points):
-
-1. **Read hello** — check `hub_connected` and `phone_connected` before acting; return from `session()` to retry if required hardware is absent
-2. **Register** — introduce yourself so the bus knows who you are:
-   ```json
-   {"type": "register", "name": "my_agent", "description": "what this agent does"}
-   ```
-   The server logs your name against all subsequent messages. Unregistered agents still work but are harder to debug.
-3. **Subscribe** only to sensors you actually need; specify `interval` (ms) if the default 100ms is too fast or too slow
-4. **Unsubscribe** in a `finally` block so the server can stop hub streams when no one needs them
-5. **Restore hardware** in a `finally` block — stop motors, turn off lights, clear display state. Wrap sends in `try/except` so they fail silently if the server is already gone.
-6. **Handle `hub_disconnected`** during runtime — pause commands, resume on `hub_connected`
-7. **Reconnect** — wrap the session in a retry loop; only `KeyboardInterrupt` exits:
-   ```python
-   while True:
-       try:
-           async with websockets.connect(WS_URL) as ws:
-               await session(ws)
-       except (websockets.exceptions.ConnectionClosed, OSError) as e:
-           print(f"Disconnected — retrying in 5s...")
-           await asyncio.sleep(5)
-       except KeyboardInterrupt:
-           break
-   ```
-   On reconnect, `session()` runs from the top — hello check, register, subscribe — so the agent self-heals automatically.
+- **Agent contract**: See `examples/agent_template.py` — the living reference for hello check, register, subscribe, cleanup, reconnect.
 
 ## File structure
 
@@ -418,7 +294,7 @@ deploy.sh                            Deploy pipeline
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 tests/
-  seam_check.py                      Contract tests for all 8 interface seams
+  seam_check.py                      Living spec — run it to see what the system does
   test_hardware_multi.py             Multi-client + real-hardware integration scenarios
   test_queue_isolation.py            Per-client queue isolation stress test
   run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)
@@ -429,6 +305,7 @@ examples/
   control.py                         Basic hub control example
   control_exec.py                    Exec-based control example
   diagnose.py                        Hardware diagnostic script
+  proximity_light.py                 Camera JPEG size → hub light proximity indicator
 scratch/
   explore_*.py                       Exploratory one-off scripts (not tests)
 bricks/bricks/

@@ -204,6 +204,56 @@ async def contract_hub_imu_stream(ws):
     )
 
 
+async def contract_hub_light_command(ws):
+    """
+    Hub actuator commands travel server → iOS BLE bridge → hub dispatch loop.
+    hub:light:on:COLOR activates the status light; the hub responds >hub:light:done
+    when the command is processed. Same response pattern holds for display and speaker.
+    """
+    try:
+        await ws.send(json.dumps({"target": "hub", "data": "hub:light:on:GREEN"}))
+        line = await recv_hub_stdout(ws)
+    except TimeoutError:
+        return failed("hub light command", "timed out — is hub connected and running?")
+
+    if line != ">hub:light:done":
+        return failed("hub light command", f"expected >hub:light:done, got {line!r}")
+
+    try:
+        await ws.send(json.dumps({"target": "hub", "data": "hub:light:off"}))
+        await recv_hub_stdout(ws)
+    except Exception:
+        pass
+
+    return passed("Actuator commands reach hub hardware — hub:light:on:COLOR → >hub:light:done")
+
+
+async def contract_hub_sensor_read(ws):
+    """
+    Hub sensor reads respond synchronously: one structured command, one response line.
+    hub:imu:heading returns a float (degrees). IMU values are always floats — not ints.
+    This contract proves the structured read path distinct from the stream path.
+    """
+    try:
+        await ws.send(json.dumps({"target": "hub", "data": "hub:imu:heading"}))
+        line = await recv_hub_stdout(ws)
+    except TimeoutError:
+        return failed("hub sensor read", "timed out — is hub connected and running?")
+
+    if not line.startswith(">hub:imu:heading="):
+        return failed("hub sensor read", f"unexpected response: {line!r}")
+
+    try:
+        heading = float(line.split("=", 1)[1])
+    except ValueError:
+        return failed("hub sensor read", f"could not parse float from {line!r}")
+
+    return passed(
+        "Sensor reads respond synchronously — hub:imu:heading → >hub:imu:heading=FLOAT",
+        f"heading={heading:.1f}°",
+    )
+
+
 async def contract_hub_battery_event():
     """
     The hub emits battery telemetry once at startup. The server parses it,
@@ -465,6 +515,8 @@ async def main():
             results.append(await contract_hub_exec_error(ws))
             results.append(await contract_hub_stdout_schema(ws))
             results.append(await contract_hub_imu_stream(ws))
+            results.append(await contract_hub_light_command(ws))
+            results.append(await contract_hub_sensor_read(ws))
     except OSError as e:
         print(f"\nCannot connect to {WS_URL}: {e}\nIs server.py running?")
         sys.exit(1)
