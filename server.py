@@ -45,8 +45,12 @@ class Client:
     def __init__(self, ws: websockets.ServerConnection):
         self.ws = ws
         self.remote_address = ws.remote_address
+        self.name: str | None = None  # set on register message
         self._queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=SEND_QUEUE_SIZE)
         self._drops = 0
+
+    def label(self) -> str:
+        return self.name if self.name else str(self.remote_address)
 
     def send(self, msg: str) -> None:
         try:
@@ -152,14 +156,20 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             except json.JSONDecodeError:
                 log.warning("Non-JSON message from %s: %r", addr, raw)
                 continue
-            log.info("Received from %s: %s", addr, msg)
+            log.info("Received from %s: %s", client.label(), msg)
             if msg.get("type") == "hub_stdout" and not msg.get("data", "").startswith(">"):
+                continue
+
+            if msg.get("type") == "register":
+                client.name = msg.get("name") or client.name
+                desc = msg.get("description", "")
+                log.info("Agent registered: %s%s", client.name, f" — {desc}" if desc else "")
                 continue
 
             if msg.get("type") == "phone_connected":
                 phone_connected = True
                 bridge_client = client
-                log.info("Phone connected (bridge: %s)", addr)
+                log.info("Phone connected (bridge: %s)", client.label())
                 broadcast = json.dumps({"type": "phone_connected"})
                 for c in (connected_clients - {client}):
                     c.send(broadcast)
@@ -170,8 +180,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 if bridge_client is None:
                     bridge_client = client
                     phone_connected = True
-                    log.info("Bridge inferred from hub_connected (phone_connected not received): %s", addr)
-                log.info("Hub connected (via bridge: %s)", addr)
+                    log.info("Bridge inferred from hub_connected (phone_connected not received): %s", client.label())
+                log.info("Hub connected (via bridge: %s)", client.label())
                 broadcast = json.dumps({"type": "hub_connected"})
                 for c in (connected_clients - {client}):
                     c.send(broadcast)
@@ -180,7 +190,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
 
             if msg.get("type") == "hub_disconnected":
                 hub_connected = False
-                log.info("Hub disconnected (via bridge: %s)", addr)
+                log.info("Hub disconnected (via bridge: %s)", client.label())
                 broadcast = json.dumps({"type": "hub_disconnected"})
                 for c in (connected_clients - {client}):
                     c.send(broadcast)
@@ -257,7 +267,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
         except asyncio.CancelledError:
             pass
         await _cleanup_subscriptions(client)
-        log.info("Client disconnected: %s", addr)
+        log.info("Client disconnected: %s", client.label())
         if client is bridge_client:
             bridge_client = None
             phone_connected = False

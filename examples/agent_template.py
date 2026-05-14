@@ -4,10 +4,11 @@ agent_template.py — reference implementation of the agent contract.
 
 Every agent on this platform must:
   1. Read hello and check hardware state before acting
-  2. Subscribe only to what it needs
-  3. Unsubscribe in a finally block
-  4. Restore hardware state in a finally block
-  5. Handle hub_disconnected events during runtime
+  2. Register — send name + description so the bus knows who you are
+  3. Subscribe only to what it needs
+  4. Unsubscribe in a finally block
+  5. Restore hardware state in a finally block
+  6. Handle hub_disconnected events during runtime
 
 This template demonstrates all five. It subscribes to hub:imu, lights the hub
 BLUE while running, prints pitch/roll to the console, and cleans up on exit.
@@ -37,7 +38,14 @@ async def main():
 
             print(f"Connected. hub={hello['hub_connected']} phone={hello['phone_connected']}")
 
-            # ── 2. Subscribe only to what you need ───────────────────────────
+            # ── 2. Register — introduce yourself to the bus ───────────────────
+            await ws.send(json.dumps({
+                "type": "register",
+                "name": "agent_template",
+                "description": "reference implementation of the agent contract",
+            }))
+
+            # ── 3. Subscribe only to what you need ────────────────────────────
             await ws.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
 
             # claim hub light so our cleanup is meaningful
@@ -45,7 +53,7 @@ async def main():
             print("hub light → BLUE (running)")
 
             try:
-                # ── 5. Handle hub_disconnected during runtime ─────────────────
+                # ── 6. Handle hub_disconnected during runtime ─────────────────
                 hub_live = True
 
                 async for raw in ws:
@@ -68,10 +76,10 @@ async def main():
                             print(f"  pitch={pitch:+.1f}°  roll={roll:+.1f}°")
 
             finally:
-                # ── 3. Unsubscribe ────────────────────────────────────────────
+                # ── 4. Unsubscribe ────────────────────────────────────────────
                 await ws.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
 
-                # ── 4. Restore hardware state ─────────────────────────────────
+                # ── 5. Restore hardware state ─────────────────────────────────
                 await ws.send(json.dumps({"target": "hub", "data": "hub:light:off"}))
                 print("hub light → off (cleaned up)")
 

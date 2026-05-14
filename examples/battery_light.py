@@ -25,6 +25,11 @@ async def main():
                 print("Hub not connected — exiting")
                 return
             print(f"Connected. hub={hello['hub_connected']} phone={hello['phone_connected']}")
+            await ws.send(json.dumps({
+                "type": "register",
+                "name": "battery_light",
+                "description": "mirrors iPhone battery state → hub light color",
+            }))
 
             try:
                 async for raw in ws:

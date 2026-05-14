@@ -33,7 +33,14 @@ async def run():
                 print("Phone not connected — exiting")
                 return
 
-            # ── 2. Subscribe only to what we need ─────────────────────────────
+            # ── 2. Register ───────────────────────────────────────────────────
+            await ws.send(json.dumps({
+                "type": "register",
+                "name": "tilt_drive",
+                "description": f"iPhone tilt → motor {MOTOR_PORT} speed",
+            }))
+
+            # ── 3. Subscribe only to what we need ─────────────────────────────
             await ws.send(json.dumps({"type": "subscribe", "sensor": "imu"}))
             print(f"Tilt control active — motor {MOTOR_PORT}. Ctrl-C to stop.\n")
 
@@ -74,9 +81,9 @@ async def run():
                         last_speed = speed
 
             finally:
-                # ── 4. Restore hardware state ─────────────────────────────────
+                # ── 5. Restore hardware state ─────────────────────────────────
                 await ws.send(json.dumps({"target": "hub", "data": f"motor:{MOTOR_PORT}:stop"}))
-                # ── 3. Unsubscribe ────────────────────────────────────────────
+                # ── 4. Unsubscribe ────────────────────────────────────────────
                 await ws.send(json.dumps({"type": "unsubscribe", "sensor": "imu"}))
                 print("\nStopped.")
 
