@@ -60,9 +60,11 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **Auto-start via STATUS_REPORT**: On BLE subscribe, the hub sends a STATUS_REPORT. iOS reads the USER_PROGRAM_RUNNING flag and only sends START if the program isn't already running. This avoids a GATT BUSY error (0x81) that would disrupt the notification pipeline.
 
+**`hub:handshake` for crash recovery**: If the iOS app crashes and relaunches while the hub program is still running, sending START would fail with GATT BUSY (0x81). Instead, iOS detects the stale-running program via STATUS_REPORT (isRunning && !didStartProgram) and writes `hub:handshake` via stdin. `main.py` responds `>ready`, resuming the command channel without a stop/restart cycle. The `!isHubReady` guard in `didUpdateValueFor` (`if line == ">ready" && !isHubReady`) is critical: it prevents re-publishing `isHubReady` when it's already true. Without this guard, every handshake would fire a spurious `hub_connected` broadcast, which triggers the server's battery exec, whose `>exec:ok` bleeds into whatever command follows.
+
 **`releasingForDeploy` vs `releaseBLE()`**: Two separate methods on `HubConnectionManager`.
-- `releaseForDeploy()` — called by the `hub_disconnect` server command. Sets `releasingForDeploy = true` so `didDisconnectPeripheral` does not reconnect.
-- `releaseBLE()` — called on app background/terminate. Sends STOP + disconnects but does NOT set the flag, so the app reconnects if it returns to foreground.
+- `releaseForDeploy()` — called by the `hub_disconnect` server command. Sends STOP_USER_PROGRAM (`.withResponse`), then cancels the BLE connection. Sets `releasingForDeploy = true` so `didDisconnectPeripheral` does not attempt to reconnect.
+- `releaseBLE()` — called ONLY on app terminate (`willTerminateNotification`). Sends STOP `.withoutResponse` (fire-and-forget into OS BT stack, survives process exit) then cancels the connection. Does NOT set `releasingForDeploy`. BLE stays alive while the app is backgrounded — `bluetooth-central` background mode handles that — so backgrounding does NOT call `releaseBLE()`.
 
 **iOS as BLE bridge**: Pybricks hubs only advertise BLE; an iPhone acts as an always-on relay to the IP network. The `bluetooth-central` background mode keeps the BLE connection alive even when the app is backgrounded — which is why the explicit release step is needed before pybricksdev can connect.
 
@@ -83,6 +85,8 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 **`>` prefix convention**: All hub output lines are prefixed with `>` by convention. `server.py` drops any `hub_stdout` line that doesn't start with `>` as a safety filter (originally guarded against `input()` echo; now just defensive).
 
 **Blocking motor ops need `await`**: In Pybricks async, `motor.run_time(speed, ms)`, `motor.run_angle(speed, deg)`, `motor.run_target(speed, deg)`, and `hub.speaker.beep(hz, ms)` return awaitables. Calling without `await` starts the operation but returns immediately (non-blocking). Always use `await` in `dispatch()`. With `await`, the task suspends and `multitask` allows `stream_loop` to keep running during the motor op — verified empirically: 20 IMU stream events arrived during a 2-second `run_time`. Max gap was 179ms at 100ms stream interval.
+
+**BLE disconnect watchdog**: `main.py` checks `hub.system.info()["host_connected_ble"]` every 5 seconds. If the host has been disconnected for 30 consecutive seconds, the program raises `SystemExit` — hub returns to idle and becomes available for `pybricksdev`. This is the crash-recovery path: after an iOS app crash, the hub self-clears within 30 seconds so `./deploy.sh` can proceed without manual intervention (press the hub button). The watchdog does not fire during normal background use because `bluetooth-central` keeps the BLE connection alive while the iOS app is backgrounded.
 
 **Safe state on agent exit**: Each agent is responsible for stopping its own hardware in a `finally` block. The server does not intervene — it can't know which motors belong to which agent, and a blanket stop would silently interrupt other agents running concurrently. Example: `await ws.send(json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"}))`
 
@@ -154,6 +158,7 @@ hub:light:blink:COLOR:ON_MS:OFF_MS →  >hub:light:done   (non-blocking, loops u
 hub:light:off                     →  >hub:light:done
 hub:stream:start:NAME:INTERVAL_MS →  >hub:stream:started:NAME
 hub:stream:stop:NAME              →  >hub:stream:stopped:NAME
+hub:handshake                     →  >ready               (re-emits the startup ready signal; iOS bridge uses this on reconnect to a running program instead of STOP+START, avoiding GATT BUSY)
 ```
 
 **Command channel concurrency**: The hub processes one command at a time. Blocking commands (`run:SPEED:DURATION`, `run_angle`, `run_target`, `speaker:beep`) suspend `stdin_loop` until they finish — no further commands are processed during that window. Stream subscriptions are unaffected (they run in a separate `stream_loop` task). If you need concurrent motor activity and new commands, use non-blocking forms: `motor:PORT:run:SPEED` to start, then `motor:PORT:stop` or `motor:PORT:run_angle` later to change behavior.

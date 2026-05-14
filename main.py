@@ -86,6 +86,10 @@ _streams = {}
 _BATT_POLL_MS = 30000
 _batt = {"ticks": 0}
 
+_BLE_CHECK_MS = 5000   # check host_connected_ble every 5 s
+_BLE_STOP_MS  = 30000  # stop program after 30 consecutive disconnected seconds
+_ble = {"check_ms": 0, "disconnected_ms": 0}
+
 
 async def dispatch(cmd):
     if not cmd:
@@ -312,6 +316,9 @@ async def dispatch(cmd):
             else:
                 print(">error:unknown:" + cmd)
 
+        elif subsystem == "handshake":
+            print(">ready")
+
         elif subsystem == "stream":
             if action == "start" and len(parts) == 5:
                 name = parts[3]
@@ -374,6 +381,22 @@ async def stream_loop():
                     s["fn"]()
                 except Exception as e:
                     print(">stream:error:" + name + ":" + str(e))
+        _ble["check_ms"] += 10
+        if _ble["check_ms"] >= _BLE_CHECK_MS:
+            _ble["check_ms"] = 0
+            try:
+                ble_state = hub.system.info().get("host_connected_ble")
+                if ble_state is True:
+                    _ble["disconnected_ms"] = 0
+                elif ble_state is False:
+                    _ble["disconnected_ms"] += _BLE_CHECK_MS
+                    if _ble["disconnected_ms"] >= _BLE_STOP_MS:
+                        raise SystemExit
+                # ble_state is None: key absent from info dict, skip this tick
+            except SystemExit:
+                raise
+            except Exception:
+                pass
         _batt["ticks"] += 10
         if _batt["ticks"] >= _BATT_POLL_MS:
             _batt["ticks"] = 0

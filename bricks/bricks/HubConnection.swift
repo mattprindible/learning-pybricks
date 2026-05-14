@@ -70,10 +70,13 @@ class HubConnectionManager: NSObject, ObservableObject {
         peripheral.writeValue(data, for: char, type: .withResponse)
     }
 
-    // Called on background / terminate — releases BLE but allows reconnect if the app returns.
+    // Called on terminate — best-effort STOP queued in OS BT stack before process exits.
     func releaseBLE() {
         guard let peripheral = hub else { return }
-        stopAndDisconnect(peripheral)
+        if let char = commandChar {
+            peripheral.writeValue(Data([0x00]), for: char, type: .withoutResponse)
+        }
+        central.cancelPeripheralConnection(peripheral)
     }
 
     private func stopAndDisconnect(_ peripheral: CBPeripheral) {
@@ -218,6 +221,12 @@ extension HubConnectionManager: CBPeripheralDelegate {
                 didStartProgram = true
                 log.info("Sending START_USER_PROGRAM")
                 peripheral.writeValue(Data([0x01]), for: characteristic, type: .withResponse)
+            } else if isRunning && !didStartProgram {
+                // Hub program running from a previous session. Request re-handshake via stdin
+                // so main.py re-emits >ready without a stop/restart cycle (avoids GATT BUSY).
+                didStartProgram = true
+                log.info("Stale program detected — requesting handshake via stdin")
+                writeStdin("hub:handshake")
             }
         case eventStdout:
             stdoutBuffer.append(contentsOf: data.dropFirst())
@@ -230,7 +239,7 @@ extension HubConnectionManager: CBPeripheralDelegate {
                     !line.isEmpty else { continue }
                 log.info("Hub stdout: \(line)")
                 stdout.send(line)
-                if line == ">ready" { isHubReady = true }
+                if line == ">ready" && !isHubReady { isHubReady = true }
             }
         default:
             break

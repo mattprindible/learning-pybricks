@@ -53,14 +53,10 @@ private class AppCoordinator: ObservableObject {
 @main
 struct bricksApp: App {
     @StateObject private var coordinator = AppCoordinator()
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView(hub: coordinator.hub, server: coordinator.server)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background { coordinator.hub.releaseBLE() }
         }
     }
 }
