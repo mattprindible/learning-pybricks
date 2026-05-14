@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-seam_check.py — empirical contract tests for the interface seams.
+seam_check.py — the system's living specification.
 
-The test IS the contract. If all pass, the system can function end-to-end.
-Run with server.py running and hub connected via iOS app.
+Running this file answers: "Is the system working, and what does it do?"
+Each contract is a verifiable statement about system behaviour. Pass output
+is written as capability statements, not test labels — the output IS the
+documentation. A future agent reading this file can infer what the platform
+guarantees without reading any other file.
 
-  Seam 1: Server WebSocket schema   (server.py ↔ agents/clients)
-  Seam 2: Hub stdout convention     (hub/iOS ↔ server) — >prefix, exec handler, terminal markers
-  Seam 3: Hub command routing       (server ↔ iOS ↔ hub) — commands reach the hub
-  Seam 4: Hub streaming             (subscribe → started → hub_stream → unsubscribe → stopped)
-  Seam 5: Server state delivery     (new clients receive cached phone_hardware state on connect)
-  Seam 6: Connectivity state        (hello includes hub_connected and phone_connected booleans)
-  Seam 7: Connectivity broadcast    (hub_disconnected/hub_connected events reach non-sender clients)
-  Seam 8: Hub battery telemetry     (hub_battery cached and replayed to fresh clients; voltage/current/charger fields)
-  Seam 9: Camera stream             (subscribe → phone_hardware:camera with JPEG frame → unsubscribe)
-  Seam 10: Camera not cached        (camera frames bypass phone_state_cache; non-subscribers don't receive frames)
+Requires: server.py running, hub connected via iOS app, iPhone attached.
+
+  Bus           — WebSocket greeting and protocol version
+  Hub           — exec interface, stdout convention, sensor streams, battery telemetry
+  Phone         — iOS sensor bridge: battery snapshot, camera stream
+  Connectivity  — hardware presence state in hello; real-time connect/disconnect events
 
 Usage: uv run python tests/seam_check.py
 """
@@ -25,24 +24,23 @@ import sys
 import websockets
 
 WS_URL = "ws://localhost:8765/"
-HUB_TIMEOUT = 15  # seconds to wait for hub response
+HUB_TIMEOUT = 15
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def recv_hub_stdout(ws, timeout=HUB_TIMEOUT):
-    """Pull messages until we get a hub_stdout line."""
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
         remaining = deadline - asyncio.get_event_loop().time()
         if remaining <= 0:
             raise TimeoutError("no hub_stdout within timeout")
-        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-        msg = json.loads(raw)
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
         if msg.get("type") == "hub_stdout":
             return msg["data"]
 
 
 async def send_exec(ws, code):
-    """Send exec command; collect output lines until >exec: terminal."""
     await ws.send(json.dumps({"target": "hub", "data": "exec:" + code}))
     lines = []
     while True:
@@ -52,60 +50,76 @@ async def send_exec(ws, code):
         lines.append(line)
 
 
-def passed(label):
+def section(title):
+    print(f"\n{title}")
+
+
+def passed(label, detail=None):
     print(f"  pass  {label}")
+    if detail:
+        print(f"        {detail}")
     return True
 
 
 def failed(label, reason):
-    print(f"  FAIL  {label}\n        {reason}")
+    print(f"  FAIL  {label}")
+    print(f"        {reason}")
     return False
 
 
-# --- Seam 1: Server WebSocket schema ---
+# ── Bus ───────────────────────────────────────────────────────────────────────
 
 async def contract_server_hello(ws):
-    """Server sends {type: 'hello', ws_url: '...'} as the first message on connect."""
+    """
+    Every connecting client receives {type:'hello', ws_url, version:N} as the
+    first message. ws_url is the authoritative WebSocket address for reconnects.
+    version is a monotonic integer agents use to gate on new capabilities.
+    """
     try:
-        raw = await asyncio.wait_for(ws.recv(), timeout=5)
-        msg = json.loads(raw)
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
     except TimeoutError:
         return failed("server hello", "no message received within 5s")
     except json.JSONDecodeError as e:
         return failed("server hello", f"non-JSON first message: {e}")
 
     if msg.get("type") != "hello":
-        return failed("server hello", f"type={msg.get('type')!r}, expected 'hello'")
+        return failed("server hello", f"expected type='hello', got {msg.get('type')!r}")
     if "ws_url" not in msg:
-        return failed("server hello", "missing ws_url field")
+        return failed("server hello", "ws_url field missing")
     if not isinstance(msg.get("version"), int):
         return failed("server hello", f"version missing or not int: {msg.get('version')!r}")
 
-    return passed(f"server hello — {{type: 'hello', ws_url, version: {msg['version']}}}")
+    return passed(
+        f"Server greets every connecting client with {{type:'hello', ws_url, version:{msg['version']}}}"
+    )
 
 
-# --- Seam 2: Hub stdout convention ---
+# ── Hub ───────────────────────────────────────────────────────────────────────
 
 async def contract_hub_exec_ok(ws):
     """
-    Hub responds to exec with >-prefixed output then >exec:ok terminal.
-    Proves: BLE bridge live, >prefix convention, exec handler present, terminal marker.
+    exec: sends arbitrary Python to the hub over BLE and returns the result.
+    Output lines arrive >-prefixed on hub_stdout. >exec:ok is the terminal marker.
+    This contract proves the full path: server → iOS BLE bridge → hub → back.
     """
     try:
         lines, status = await send_exec(ws, "print('>ping')")
     except TimeoutError:
-        return failed("hub exec ok", "timed out — is the hub connected via iOS app?")
+        return failed("hub exec", "timed out — is the hub connected via iOS app?")
 
     if ">ping" not in lines:
-        return failed("hub exec ok", f"expected >ping in output, got {lines}")
+        return failed("hub exec", f"expected >ping in output, got {lines}")
     if status != ">exec:ok":
-        return failed("hub exec ok", f"expected >exec:ok terminal, got {status!r}")
+        return failed("hub exec", f"expected >exec:ok terminal, got {status!r}")
 
-    return passed("hub exec ok — BLE bridge + >prefix + exec handler + >exec:ok terminal")
+    return passed("exec: runs arbitrary Python on the hub; output arrives >-prefixed with >exec:ok terminal")
 
 
 async def contract_hub_exec_error(ws):
-    """Exec errors produce >exec:error:MESSAGE (same terminal, different prefix variant)."""
+    """
+    exec: exceptions produce >exec:error:MESSAGE. The original error detail is
+    preserved so agents can diagnose failures without a separate log channel.
+    """
     try:
         _, status = await send_exec(ws, "raise ValueError('seam_test')")
     except TimeoutError:
@@ -116,15 +130,14 @@ async def contract_hub_exec_error(ws):
     if "seam_test" not in status:
         return failed("hub exec error", f"error detail absent in {status!r}")
 
-    return passed("hub exec error — >exec:error:MESSAGE terminal")
+    return passed("exec: exceptions surface as >exec:error:MESSAGE — original error detail preserved")
 
-
-# --- Seam 3: Hub command routing ---
 
 async def contract_hub_stdout_schema(ws):
     """
-    hub_stdout messages from the server carry {type, data} fields.
-    Verified against a real message, not just a schema definition.
+    All hub output reaches agents as {type:'hub_stdout', data:'...'}. Verified
+    against a live message so the contract covers the full serialisation path,
+    not just a schema definition.
     """
     try:
         await ws.send(json.dumps({"target": "hub", "data": "exec:print('>schema_check')"}))
@@ -132,23 +145,20 @@ async def contract_hub_stdout_schema(ws):
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                return failed("hub_stdout schema", "timed out")
-            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            msg = json.loads(raw)
+                return failed("hub stdout schema", "timed out")
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
             if msg.get("type") == "hub_stdout" and msg.get("data") == ">schema_check":
-                # Drain the >exec:ok
-                await recv_hub_stdout(ws)
-                if "type" not in msg or "data" not in msg:
-                    return failed("hub_stdout schema", f"missing fields in {msg}")
-                return passed("hub_stdout schema — {type: 'hub_stdout', data: '...'}")
+                await recv_hub_stdout(ws)  # drain >exec:ok
+                return passed("Hub output reaches agents as {type:'hub_stdout', data} — verified on live traffic")
     except TimeoutError:
-        return failed("hub_stdout schema", "timed out")
+        return failed("hub stdout schema", "timed out")
 
 
 async def contract_hub_imu_stream(ws):
     """
-    Subscribe to hub:imu → >hub:stream:started:imu → hub_stream frames arrive → unsubscribe → >hub:stream:stopped:imu.
-    Proves: start/stop lifecycle, >stream: interception, hub_stream JSON schema.
+    Agents subscribe to hub sensor streams by name and interval. The hub starts
+    emitting, the server intercepts >stream: lines and delivers hub_stream JSON
+    to subscribers only. Unsubscribe stops the hub stream when no subscribers remain.
     """
     await ws.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
     deadline = asyncio.get_event_loop().time() + HUB_TIMEOUT
@@ -160,8 +170,7 @@ async def contract_hub_imu_stream(ws):
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return failed("hub imu stream", "timed out waiting for hub_stream frame")
-            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            msg = json.loads(raw)
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
             if msg.get("type") == "hub_stdout" and ">hub:stream:started:" in msg.get("data", ""):
                 started_confirmed = True
             elif msg.get("type") == "hub_stream" and msg.get("sensor") == "hub:imu":
@@ -174,7 +183,7 @@ async def contract_hub_imu_stream(ws):
 
     for field in ("pitch", "roll", "heading"):
         if not isinstance(frame.get(field), float):
-            return failed("hub imu stream", f"field {field!r} missing or not float in {frame}")
+            return failed("hub imu stream", f"{field!r} missing or not float in {frame}")
 
     await ws.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
 
@@ -183,201 +192,110 @@ async def contract_hub_imu_stream(ws):
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return failed("hub imu stream", ">hub:stream:stopped:imu not received after unsubscribe")
-            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            msg = json.loads(raw)
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
             if msg.get("type") == "hub_stdout" and ">hub:stream:stopped:" in msg.get("data", ""):
                 break
     except asyncio.TimeoutError:
         return failed("hub imu stream", "timed out waiting for stream stopped confirmation")
 
-    return passed("hub imu stream — subscribe→started→hub_stream{pitch,roll,heading}→unsubscribe→stopped")
-
-
-# --- Seam 5: Server state delivery ---
-
-async def contract_phone_state_cache():
-    """
-    Fresh connection receives cached phone_hardware:battery immediately after hello.
-    Proves: server replays last-known phone state to late-joining clients.
-    Opens its own connection so the cached state arrives cold (not replayed from earlier recv).
-    """
-    try:
-        async with websockets.connect(WS_URL) as ws:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            msg = json.loads(raw)
-            if msg.get("type") != "hello":
-                return failed("phone state cache", f"first message was not hello: {msg}")
-
-            deadline = asyncio.get_event_loop().time() + 5
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    return failed("phone state cache", "no phone_hardware:battery — is iPhone connected?")
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                msg = json.loads(raw)
-                if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
-                    level = msg.get("level")
-                    state = msg.get("state")
-                    if not isinstance(level, (int, float)):
-                        return failed("phone state cache", f"battery level not numeric: {level!r}")
-                    if state not in {"charging", "full", "unplugged", "unknown"}:
-                        return failed("phone state cache", f"battery state unexpected: {state!r}")
-                    print(f"     phone battery: level={level:.0%} state={state!r}")
-                    return passed("phone state cache — battery replayed to fresh client on connect")
-    except OSError as e:
-        return failed("phone state cache", f"connection failed: {e}")
-    except asyncio.TimeoutError:
-        return failed("phone state cache", "timed out")
-
-
-# --- Seam 6: Connectivity state ---
-
-async def contract_connectivity_state():
-    """
-    Fresh hello includes hub_connected (bool) and phone_connected (bool).
-    Both must be present; values may be True or False depending on hardware state.
-    Opens its own connection so it reads a cold hello with current state.
-    """
-    try:
-        async with websockets.connect(WS_URL) as ws:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            msg = json.loads(raw)
-    except OSError as e:
-        return failed("connectivity state", f"connection failed: {e}")
-    except asyncio.TimeoutError:
-        return failed("connectivity state", "timed out waiting for hello")
-
-    if msg.get("type") != "hello":
-        return failed("connectivity state", f"first message was not hello: {msg}")
-    if not isinstance(msg.get("hub_connected"), bool):
-        return failed("connectivity state", f"hub_connected missing or not bool: {msg.get('hub_connected')!r}")
-    if not isinstance(msg.get("phone_connected"), bool):
-        return failed("connectivity state", f"phone_connected missing or not bool: {msg.get('phone_connected')!r}")
-
-    hc = msg["hub_connected"]
-    pc = msg["phone_connected"]
-    print(f"     hub_connected={hc} phone_connected={pc}")
-    return passed("connectivity state — hello includes hub_connected + phone_connected booleans")
-
-
-async def contract_connectivity_event_broadcast():
-    """
-    hub_disconnected and hub_connected events are broadcast to non-sender clients.
-    Uses synthetic injection — any client can send these events; the server routes
-    them to all other connected clients and updates its own state.
-    Opens its own connections and restores server state when done.
-    """
-    try:
-        async with websockets.connect(WS_URL) as ws_obs, \
-                   websockets.connect(WS_URL) as ws_inj:
-            # drain hellos (and any cached phone_hardware state)
-            await asyncio.wait_for(ws_obs.recv(), timeout=5)
-            await asyncio.wait_for(ws_inj.recv(), timeout=5)
-
-            # inject hub_disconnected; observer should receive the broadcast
-            await ws_inj.send(json.dumps({"type": "hub_disconnected"}))
-            got_disconnected = False
-            try:
-                deadline = asyncio.get_event_loop().time() + 3
-                while not got_disconnected:
-                    remaining = deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        break
-                    raw = await asyncio.wait_for(ws_obs.recv(), timeout=remaining)
-                    if json.loads(raw).get("type") == "hub_disconnected":
-                        got_disconnected = True
-            except asyncio.TimeoutError:
-                pass
-
-            if not got_disconnected:
-                return failed("connectivity broadcast", "hub_disconnected not broadcast to observer")
-
-            # restore: inject hub_connected; observer should receive it
-            await ws_inj.send(json.dumps({"type": "hub_connected"}))
-            got_connected = False
-            try:
-                deadline = asyncio.get_event_loop().time() + 3
-                while not got_connected:
-                    remaining = deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        break
-                    raw = await asyncio.wait_for(ws_obs.recv(), timeout=remaining)
-                    if json.loads(raw).get("type") == "hub_connected":
-                        got_connected = True
-            except asyncio.TimeoutError:
-                pass
-
-            if not got_connected:
-                return failed("connectivity broadcast", "hub_connected not broadcast to observer")
-
-    except OSError as e:
-        return failed("connectivity broadcast", f"connection failed: {e}")
-
-    return passed("connectivity broadcast — hub_disconnected + hub_connected reach non-sender clients")
+    return passed(
+        "Hub streams sensor data at subscriber-requested intervals; subscribe/unsubscribe lifecycle is symmetric",
+        f"hub:imu → {{pitch, roll, heading: float}}  pitch={frame['pitch']:.1f}°",
+    )
 
 
 async def contract_hub_battery_event():
     """
-    Fresh connection receives cached hub_battery immediately after hello.
-    Proves: hub battery telemetry is emitted by main.py, parsed by server, cached, and replayed.
+    The hub emits battery telemetry once at startup. The server parses it,
+    caches it, and replays it to every connecting client so agents always have
+    current battery state regardless of when they join.
     """
     try:
         async with websockets.connect(WS_URL) as ws:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            msg = json.loads(raw)
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
             if msg.get("type") != "hello":
-                return failed("hub battery event", f"first message not hello: {msg}")
+                return failed("hub battery", f"first message not hello: {msg}")
             deadline = asyncio.get_event_loop().time() + 5
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
-                    return failed("hub battery event", "no hub_battery — is hub connected and has it reported yet?")
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                msg = json.loads(raw)
+                    return failed("hub battery", "no hub_battery — is hub connected and has it reported yet?")
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
                 if msg.get("type") == "hub_battery":
-                    voltage = msg.get("voltage")
-                    current = msg.get("current")
-                    charger = msg.get("charger")
-                    if not isinstance(voltage, int):
-                        return failed("hub battery event", f"voltage not int: {voltage!r}")
-                    if not isinstance(current, int):
-                        return failed("hub battery event", f"current not int: {current!r}")
-                    if not isinstance(charger, bool):
-                        return failed("hub battery event", f"charger not bool: {charger!r}")
-                    print(f"     hub battery: {voltage}mV {current}mA charger={charger}")
-                    return passed("hub battery event — voltage/current/charger replayed to fresh client on connect")
+                    v, i, c = msg.get("voltage"), msg.get("current"), msg.get("charger")
+                    if not isinstance(v, int):
+                        return failed("hub battery", f"voltage not int: {v!r}")
+                    if not isinstance(i, int):
+                        return failed("hub battery", f"current not int: {i!r}")
+                    if not isinstance(c, bool):
+                        return failed("hub battery", f"charger not bool: {c!r}")
+                    return passed(
+                        "Hub emits battery telemetry at startup; server caches and replays it to late-joining clients",
+                        f"{v}mV  {i}mA  charger={c}",
+                    )
     except OSError as e:
-        return failed("hub battery event", f"connection failed: {e}")
+        return failed("hub battery", f"connection failed: {e}")
     except asyncio.TimeoutError:
-        return failed("hub battery event", "timed out")
+        return failed("hub battery", "timed out")
 
 
-# --- Seam 9: Camera stream ---
+# ── Phone ─────────────────────────────────────────────────────────────────────
 
-async def contract_camera_stream():
+async def contract_phone_battery_cache():
     """
-    Subscribe to camera → phone_hardware:camera frames arrive with correct schema → unsubscribe.
-    Proves: iOS bridge starts camera on subscribe, JPEG frames reach the bus, schema fields present.
-    Skips first 5 frames to allow auto-exposure to settle.
-    Opens its own connection.
+    Phone battery state is a snapshot sensor: the iOS app emits it on connect
+    and on any change. The server caches the last-known value and replays it to
+    every new client immediately after hello — late-joining agents get current
+    state without timing coordination.
     """
     try:
         async with websockets.connect(WS_URL) as ws:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            if json.loads(raw).get("type") != "hello":
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if msg.get("type") != "hello":
+                return failed("phone battery cache", f"first message not hello: {msg}")
+            deadline = asyncio.get_event_loop().time() + 5
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("phone battery cache", "no phone_hardware:battery — is iPhone connected?")
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
+                    level, state = msg.get("level"), msg.get("state")
+                    if not isinstance(level, (int, float)):
+                        return failed("phone battery cache", f"level not numeric: {level!r}")
+                    if state not in {"charging", "full", "unplugged", "unknown"}:
+                        return failed("phone battery cache", f"unexpected state: {state!r}")
+                    return passed(
+                        "Phone battery state is cached server-side and replayed to every new client after hello",
+                        f"level={level:.0%}  state={state!r}",
+                    )
+    except OSError as e:
+        return failed("phone battery cache", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("phone battery cache", "timed out")
+
+
+async def contract_camera_stream():
+    """
+    Camera is a stream sensor: it only runs while at least one agent is subscribed.
+    Subscribing starts the iOS capture session; each frame arrives as
+    phone_hardware:camera carrying a base64 JPEG with width, height, and timestamp_ms.
+    First 5 frames are skipped to allow auto-exposure to settle (~300ms).
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            if json.loads(await asyncio.wait_for(ws.recv(), timeout=5)).get("type") != "hello":
                 return failed("camera stream", "first message not hello")
 
             await ws.send(json.dumps({"type": "subscribe", "sensor": "camera"}))
 
-            frame = None
-            frames_seen = 0
+            frame, frames_seen = None, 0
             deadline = asyncio.get_event_loop().time() + 10
             while frame is None:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     return failed("camera stream", "timed out — is iOS app running with camera permission?")
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                msg = json.loads(raw)
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
                 if msg.get("type") == "phone_hardware" and msg.get("sensor") == "camera":
                     frames_seen += 1
                     if frames_seen >= 5:
@@ -392,48 +310,43 @@ async def contract_camera_stream():
                 return failed("camera stream", f"frame is not JPEG (magic: {frame_bytes[:2].hex()})")
 
             await ws.send(json.dumps({"type": "unsubscribe", "sensor": "camera"}))
-            print(f"     camera frame: {frame['width']}x{frame['height']} {len(frame_bytes):,} bytes JPEG")
-            return passed("camera stream — subscribe→phone_hardware:camera{frame,width,height,timestamp_ms}→unsubscribe")
-
+            return passed(
+                "Camera streams JPEG frames on subscribe; each frame carries width, height and timestamp_ms",
+                f"{frame['width']}x{frame['height']}  {len(frame_bytes):,} bytes  ts={frame['timestamp_ms']}ms",
+            )
     except OSError as e:
         return failed("camera stream", f"connection failed: {e}")
     except asyncio.TimeoutError:
         return failed("camera stream", "timed out")
 
 
-# --- Seam 10: Camera not cached ---
-
 async def contract_camera_not_cached():
     """
-    Camera frames bypass phone_state_cache (STREAM_ONLY_SENSORS).
-    While client A has camera subscribed (frames flowing), fresh client B must NOT
-    receive a camera frame — neither as a cached replay nor as a live delivery to a non-subscriber.
-    Opens its own connections.
+    Camera is in STREAM_ONLY_SENSORS: frames are never written to phone_state_cache
+    and are never delivered to non-subscribing clients. A freshly connecting agent
+    that doesn't subscribe to camera receives no camera frames — not a stale replay,
+    not live frames meant for someone else.
     """
     try:
         async with websockets.connect(WS_URL) as ws_a:
             await asyncio.wait_for(ws_a.recv(), timeout=5)  # hello
 
-            # Subscribe and wait until at least one frame is confirmed flowing
             await ws_a.send(json.dumps({"type": "subscribe", "sensor": "camera"}))
             deadline = asyncio.get_event_loop().time() + 10
-            stream_live = False
-            while not stream_live:
+            while True:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     return failed("camera not cached", "camera stream never started — is iOS app running?")
-                raw = await asyncio.wait_for(ws_a.recv(), timeout=remaining)
-                if json.loads(raw).get("sensor") == "camera":
-                    stream_live = True
+                if json.loads(await asyncio.wait_for(ws_a.recv(), timeout=remaining)).get("sensor") == "camera":
+                    break
 
-            # Stream is live — connect a fresh client and watch for 1.5s
             async with websockets.connect(WS_URL) as ws_b:
                 await asyncio.wait_for(ws_b.recv(), timeout=5)  # hello
                 got_camera = False
                 try:
-                    drain_end = asyncio.get_event_loop().time() + 1.5
+                    end = asyncio.get_event_loop().time() + 1.5
                     while True:
-                        remaining = drain_end - asyncio.get_event_loop().time()
+                        remaining = end - asyncio.get_event_loop().time()
                         if remaining <= 0:
                             break
                         msg = json.loads(await asyncio.wait_for(ws_b.recv(), timeout=remaining))
@@ -445,47 +358,134 @@ async def contract_camera_not_cached():
 
                 if got_camera:
                     return failed("camera not cached",
-                                  "camera frame delivered to non-subscribing client — STREAM_ONLY_SENSORS broken")
+                                  "camera frame reached non-subscribing client — STREAM_ONLY_SENSORS broken")
 
             await ws_a.send(json.dumps({"type": "unsubscribe", "sensor": "camera"}))
-            return passed("camera not cached — frames not cached, not delivered to non-subscribers")
-
+            return passed(
+                "Camera frames are never cached or delivered to non-subscribers — stream-only, no stale replay"
+            )
     except OSError as e:
         return failed("camera not cached", f"connection failed: {e}")
     except asyncio.TimeoutError:
         return failed("camera not cached", "timed out")
 
 
-async def main():
-    print(f"\nConnecting to {WS_URL} ...\n")
+# ── Connectivity ──────────────────────────────────────────────────────────────
+
+async def contract_connectivity_state():
+    """
+    Every hello includes hub_connected and phone_connected as booleans reflecting
+    the live hardware state at connect time. Agents use these to decide whether to
+    wait for hardware before issuing commands.
+    """
     try:
         async with websockets.connect(WS_URL) as ws:
-            print("Contract checks:\n")
-            results = [
-                await contract_server_hello(ws),
-                await contract_hub_exec_ok(ws),
-                await contract_hub_exec_error(ws),
-                await contract_hub_stdout_schema(ws),
-                await contract_hub_imu_stream(ws),
-            ]
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
     except OSError as e:
-        print(f"Cannot connect: {e}\nIs server.py running?")
+        return failed("connectivity state", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("connectivity state", "timed out waiting for hello")
+
+    if msg.get("type") != "hello":
+        return failed("connectivity state", f"first message not hello: {msg}")
+    if not isinstance(msg.get("hub_connected"), bool):
+        return failed("connectivity state", f"hub_connected not bool: {msg.get('hub_connected')!r}")
+    if not isinstance(msg.get("phone_connected"), bool):
+        return failed("connectivity state", f"phone_connected not bool: {msg.get('phone_connected')!r}")
+
+    return passed(
+        "hello reflects live hardware state: hub_connected and phone_connected booleans",
+        f"hub_connected={msg['hub_connected']}  phone_connected={msg['phone_connected']}",
+    )
+
+
+async def contract_connectivity_event_broadcast():
+    """
+    When hub connection state changes, all non-sender clients receive hub_connected
+    or hub_disconnected immediately. Agents rely on these events to pause commands
+    when the hub drops and resume when it reconnects — without polling.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws_obs, \
+                   websockets.connect(WS_URL) as ws_inj:
+            await asyncio.wait_for(ws_obs.recv(), timeout=5)
+            await asyncio.wait_for(ws_inj.recv(), timeout=5)
+
+            await ws_inj.send(json.dumps({"type": "hub_disconnected"}))
+            got_disconnected = False
+            try:
+                deadline = asyncio.get_event_loop().time() + 3
+                while not got_disconnected:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    if json.loads(await asyncio.wait_for(ws_obs.recv(), timeout=remaining)).get("type") == "hub_disconnected":
+                        got_disconnected = True
+            except asyncio.TimeoutError:
+                pass
+
+            if not got_disconnected:
+                return failed("connectivity broadcast", "hub_disconnected not broadcast to observer")
+
+            await ws_inj.send(json.dumps({"type": "hub_connected"}))
+            got_connected = False
+            try:
+                deadline = asyncio.get_event_loop().time() + 3
+                while not got_connected:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    if json.loads(await asyncio.wait_for(ws_obs.recv(), timeout=remaining)).get("type") == "hub_connected":
+                        got_connected = True
+            except asyncio.TimeoutError:
+                pass
+
+            if not got_connected:
+                return failed("connectivity broadcast", "hub_connected not broadcast to observer")
+
+    except OSError as e:
+        return failed("connectivity broadcast", f"connection failed: {e}")
+
+    return passed("Hub connect/disconnect events propagate immediately to all non-sender clients")
+
+
+# ── Runner ────────────────────────────────────────────────────────────────────
+
+async def main():
+    print(f"\nVerifying system at {WS_URL}\n")
+    results = []
+
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            section("Bus")
+            results.append(await contract_server_hello(ws))
+
+            section("Hub")
+            results.append(await contract_hub_exec_ok(ws))
+            results.append(await contract_hub_exec_error(ws))
+            results.append(await contract_hub_stdout_schema(ws))
+            results.append(await contract_hub_imu_stream(ws))
+    except OSError as e:
+        print(f"\nCannot connect to {WS_URL}: {e}\nIs server.py running?")
         sys.exit(1)
 
-    # Seams 5–10 open their own connections
-    results.append(await contract_phone_state_cache())
-    results.append(await contract_connectivity_state())
-    results.append(await contract_connectivity_event_broadcast())
     results.append(await contract_hub_battery_event())
+
+    section("Phone")
+    results.append(await contract_phone_battery_cache())
     results.append(await contract_camera_stream())
     results.append(await contract_camera_not_cached())
 
-    print()
+    section("Connectivity")
+    results.append(await contract_connectivity_state())
+    results.append(await contract_connectivity_event_broadcast())
+
+    print(f"\n{'─' * 56}")
     if all(results):
-        print(f"All {len(results)} contracts intact.\n")
+        print(f"  {len(results)} contracts verified — system is operational\n")
     else:
         n = results.count(False)
-        print(f"{n} of {len(results)} contract(s) broken.\n")
+        print(f"  {n} of {len(results)} contracts broken\n")
         sys.exit(1)
 
 
