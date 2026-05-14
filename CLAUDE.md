@@ -308,9 +308,10 @@ sb.stop()
 
 **Startup events** (emitted once before `>ready`):
 ```
->mtu:INT           — negotiated BLE MTU payload size in bytes
->port:X=LABEL      — device on each port (or "none")
->ready             — hub is accepting commands
+>mtu:INT                                        — negotiated BLE MTU payload size in bytes
+>port:X=LABEL                                   — device on each port (or "none")
+>hub_battery:voltage=INT:current=INT:charger=INT — initial battery reading (server caches as hub_battery_cache)
+>ready                                          — hub is accepting commands
 ```
 
 **Exec interface:**
@@ -406,7 +407,9 @@ tests/
   test_queue_isolation.py            Per-client queue isolation stress test
   run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)
 examples/
+  agent_template.py                  Demonstrates all 7 agent contract points
   tilt_drive.py                      iPhone tilt → motor speed control script
+  battery_light.py                   iPhone battery state → hub light color
   control.py                         Basic hub control example
   control_exec.py                    Exec-based control example
   diagnose.py                        Hardware diagnostic script
