@@ -218,10 +218,12 @@ hub:stream:stop:NAME              →  >hub:stream:stopped:NAME
 
 **Command channel concurrency**: The hub processes one command at a time. Blocking commands (`run:SPEED:DURATION`, `run_angle`, `run_target`, `speaker:beep`) suspend `stdin_loop` until they finish — no further commands are processed during that window. Stream subscriptions are unaffected (they run in a separate `stream_loop` task). If you need concurrent motor activity and new commands, use non-blocking forms: `motor:PORT:run:SPEED` to start, then `motor:PORT:stop` or `motor:PORT:run_angle` later to change behavior.
 
-**Hub streaming**: `hub:stream:start:NAME:INTERVAL_MS` registers an emit function that fires every INTERVAL_MS. Output lines are `>stream:NAME:key=val:key=val...` on hub stdout. The server intercepts these (they never reach the generic broadcast), parses them into `hub_stream` JSON, and routes to subscribers. Subscribe with `{"type": "subscribe", "sensor": "hub:NAME"}`. Available streams:
+**Hub streaming**: `hub:stream:start:NAME:INTERVAL_MS` registers an emit function that fires every INTERVAL_MS. Output lines are `>stream:NAME:key=val:key=val...` on hub stdout. The server intercepts these (they never reach the generic broadcast), parses them into `hub_stream` JSON, and routes to subscribers. Subscribe with `{"type": "subscribe", "sensor": "hub:NAME", "interval": MS}`. Available streams:
 - `imu` — `pitch`, `roll`, `heading` (floats, degrees); emits `>stream:imu:pitch=F:roll=F:heading=F`
 
-Server routing: `{"type": "subscribe", "sensor": "hub:imu"}` → server sends `hub:stream:start:imu:100` to hub. Hub starts emitting. Server parses `>stream:imu:...` lines and sends `{"type": "hub_stream", "sensor": "hub:imu", "pitch": F, "roll": F, "heading": F}` to subscribers only.
+**`interval` is optional** (default 100ms, minimum 10ms). The server tracks the fastest rate requested across all subscribers and restarts the hub stream if a new subscriber requests a shorter interval. Slower subscribers simply receive more frames than they asked for. The active interval is remembered and replayed on hub reconnect.
+
+Server routing: `{"type": "subscribe", "sensor": "hub:imu", "interval": 250}` → server sends `hub:stream:start:imu:250` to hub. Hub starts emitting. Server parses `>stream:imu:...` lines and sends `{"type": "hub_stream", "sensor": "hub:imu", "pitch": F, "roll": F, "heading": F}` to subscribers only.
 
 **DriveBase** (exec-only — not in structured protocol):
 ```python
@@ -375,7 +377,7 @@ Every agent connecting to the bus should follow this sequence (`examples/agent_t
    {"type": "register", "name": "my_agent", "description": "what this agent does"}
    ```
    The server logs your name against all subsequent messages. Unregistered agents still work but are harder to debug.
-3. **Subscribe** only to sensors you actually need
+3. **Subscribe** only to sensors you actually need; specify `interval` (ms) if the default 100ms is too fast or too slow
 4. **Unsubscribe** in a `finally` block so the server can stop hub streams when no one needs them
 5. **Restore hardware** in a `finally` block — stop motors, turn off lights, clear display state. Wrap sends in `try/except` so they fail silently if the server is already gone.
 6. **Handle `hub_disconnected`** during runtime — pause commands, resume on `hub_connected`
