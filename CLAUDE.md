@@ -369,7 +369,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 
 Every agent connecting to the bus should follow this sequence (`examples/agent_template.py` demonstrates all points):
 
-1. **Read hello** — check `hub_connected` and `phone_connected` before acting; exit cleanly if required hardware is absent
+1. **Read hello** — check `hub_connected` and `phone_connected` before acting; return from `session()` to retry if required hardware is absent
 2. **Register** — introduce yourself so the bus knows who you are:
    ```json
    {"type": "register", "name": "my_agent", "description": "what this agent does"}
@@ -377,8 +377,21 @@ Every agent connecting to the bus should follow this sequence (`examples/agent_t
    The server logs your name against all subsequent messages. Unregistered agents still work but are harder to debug.
 3. **Subscribe** only to sensors you actually need
 4. **Unsubscribe** in a `finally` block so the server can stop hub streams when no one needs them
-5. **Restore hardware** in a `finally` block — stop motors, turn off lights, clear display state
+5. **Restore hardware** in a `finally` block — stop motors, turn off lights, clear display state. Wrap sends in `try/except` so they fail silently if the server is already gone.
 6. **Handle `hub_disconnected`** during runtime — pause commands, resume on `hub_connected`
+7. **Reconnect** — wrap the session in a retry loop; only `KeyboardInterrupt` exits:
+   ```python
+   while True:
+       try:
+           async with websockets.connect(WS_URL) as ws:
+               await session(ws)
+       except (websockets.exceptions.ConnectionClosed, OSError) as e:
+           print(f"Disconnected — retrying in 5s...")
+           await asyncio.sleep(5)
+       except KeyboardInterrupt:
+           break
+   ```
+   On reconnect, `session()` runs from the top — hello check, register, subscribe — so the agent self-heals automatically.
 
 ## File structure
 
