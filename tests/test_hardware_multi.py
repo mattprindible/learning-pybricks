@@ -9,6 +9,7 @@ Scenarios:
   C. Command during stream    — hub:light:on while hub:imu is streaming; both succeed
   D. Crash isolation          — abrupt client close cleans up subscriptions; surviving client unaffected
   E. Hello accuracy           — hub_connected in hello confirmed by a live hub exec round-trip
+  F. Subscription recovery    — hub reconnect rehydrates active subscribers via _recover_subscriptions()
 
 Usage: uv run python tests/test_hardware_multi.py
 """
@@ -283,6 +284,54 @@ async def scenario_e():
     return True
 
 
+# ── scenario F: subscription recovery ───────────────────────────────────────
+
+async def scenario_f():
+    print("\nF. Subscription recovery (hub reconnect rehydrates active subscribers)")
+
+    ws_sub = await connect()
+    ws_inj = await connect()
+
+    try:
+        # subscribe and confirm frames are arriving
+        await ws_sub.send(json.dumps({"type": "subscribe", "sensor": "hub:imu"}))
+        await recv_until(ws_sub, lambda m: m.get("type") == "hub_stream" and m.get("sensor") == "hub:imu",
+                         timeout=5.0)
+
+        # synthetic hub disconnect — server broadcasts hub_disconnected, sets hub_connected=False
+        await ws_inj.send(json.dumps({"type": "hub_disconnected"}))
+        await recv_until(ws_sub, lambda m: m.get("type") == "hub_disconnected", timeout=3.0)
+
+        # synthetic hub reconnect — server broadcasts hub_connected, calls _recover_subscriptions()
+        # _recover_subscriptions() sends hub:stream:start:imu:100 to the hub,
+        # which responds with >hub:stream:started:imu (arrives as hub_stdout to subscribers)
+        await ws_inj.send(json.dumps({"type": "hub_connected"}))
+
+        try:
+            await recv_until(
+                ws_sub,
+                lambda m: m.get("type") == "hub_stdout" and ">hub:stream:started:" in m.get("data", ""),
+                timeout=5.0,
+            )
+        except TimeoutError:
+            return fail("F", "_recover_subscriptions() did not produce >hub:stream:started after reconnect")
+
+        # confirm frames resume without the subscriber having to re-subscribe
+        try:
+            await recv_until(ws_sub, lambda m: m.get("type") == "hub_stream" and m.get("sensor") == "hub:imu",
+                             timeout=3.0)
+        except TimeoutError:
+            return fail("F", "hub_stream frames did not resume after recovery")
+
+    finally:
+        await ws_sub.send(json.dumps({"type": "unsubscribe", "sensor": "hub:imu"}))
+        await ws_sub.close()
+        await ws_inj.close()
+
+    ok("F. _recover_subscriptions() fired on hub_connected; hub:imu frames resumed without re-subscribe")
+    return True
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -293,6 +342,7 @@ async def main():
         await scenario_c(),
         await scenario_d(),
         await scenario_e(),
+        await scenario_f(),
     ]
     print()
     passed = sum(1 for r in results if r is True)

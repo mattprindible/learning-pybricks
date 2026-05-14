@@ -339,6 +339,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | C. Command during stream | `hub:light` responds while `hub:imu` streaming; stream continues |
 | D. Crash isolation | Abrupt client close cleans up subscriptions; surviving client is first subscriber on re-subscribe |
 | E. Hello accuracy | `hub_connected=True` in hello confirmed by live hub exec round-trip |
+| F. Subscription recovery | Hub reconnect triggers `_recover_subscriptions()`; active subscribers receive frames without re-subscribing |
 
 **Adding new tests**: add to `seam_check.py` when a new protocol boundary is established (new message type, new field, new subscription behavior). Add to `test_hardware_multi.py` when the behavior requires concurrent clients or timing measurement. Run `./tests/run_integration.sh` before merging any change to `server.py` or `main.py`.
 
