@@ -4,6 +4,7 @@ Tilt top of phone away from you → forward, toward you → reverse.
 """
 import asyncio
 import json
+import sys
 
 import websockets
 
@@ -20,36 +21,70 @@ def _pitch_to_speed(pitch: float) -> int:
 
 
 async def run():
-    async with websockets.connect("ws://localhost:8765/") as ws:
-        json.loads(await ws.recv())  # hello
+    try:
+        async with websockets.connect("ws://localhost:8765/") as ws:
 
-        await ws.send(json.dumps({"type": "subscribe", "sensor": "imu"}))
-        print(f"Tilt control active — motor {MOTOR_PORT}. Ctrl-C to stop.\n")
+            # ── 1. Check hardware state before acting ─────────────────────────
+            hello = json.loads(await ws.recv())
+            if not hello.get("hub_connected"):
+                print("Hub not connected — exiting")
+                return
+            if not hello.get("phone_connected"):
+                print("Phone not connected — exiting")
+                return
 
-        last_speed = None
-        try:
-            async for raw in ws:
-                msg = json.loads(raw)
-                if msg.get("type") != "phone_hardware" or msg.get("sensor") != "imu":
-                    continue
+            # ── 2. Subscribe only to what we need ─────────────────────────────
+            await ws.send(json.dumps({"type": "subscribe", "sensor": "imu"}))
+            print(f"Tilt control active — motor {MOTOR_PORT}. Ctrl-C to stop.\n")
 
-                pitch = msg["attitude"]["pitch"]
-                speed = _pitch_to_speed(pitch)
+            last_speed = None
+            hub_live = True
 
-                if last_speed is None or abs(speed - last_speed) > 15:
-                    cmd = f"motor:{MOTOR_PORT}:stop" if speed == 0 else f"motor:{MOTOR_PORT}:run:{speed}"
-                    await ws.send(json.dumps({"target": "hub", "data": cmd}))
+            try:
+                async for raw in ws:
+                    msg = json.loads(raw)
 
-                    bar = ("+" if speed > 0 else "-") * (abs(speed) // 50) if speed != 0 else "|"
-                    print(f"  pitch={pitch:+.3f} rad  speed={speed:+5d}  {bar}", flush=True)
-                    last_speed = speed
+                    # ── 5. Handle hub_disconnected during runtime ─────────────
+                    if msg.get("type") == "hub_disconnected":
+                        hub_live = False
+                        print("\nHub disconnected — waiting for reconnect")
+                        continue
 
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
-        finally:
-            await ws.send(json.dumps({"target": "hub", "data": f"motor:{MOTOR_PORT}:stop"}))
-            await ws.send(json.dumps({"type": "unsubscribe", "sensor": "imu"}))
-            print("\nStopped.")
+                    if msg.get("type") == "hub_connected":
+                        hub_live = True
+                        last_speed = None  # force re-send on resume
+                        print("Hub reconnected — resuming")
+                        continue
+
+                    if not hub_live:
+                        continue
+
+                    if msg.get("type") != "phone_hardware" or msg.get("sensor") != "imu":
+                        continue
+
+                    pitch = msg["attitude"]["pitch"]
+                    speed = _pitch_to_speed(pitch)
+
+                    if last_speed is None or abs(speed - last_speed) > 15:
+                        cmd = f"motor:{MOTOR_PORT}:stop" if speed == 0 else f"motor:{MOTOR_PORT}:run:{speed}"
+                        await ws.send(json.dumps({"target": "hub", "data": cmd}))
+
+                        bar = ("+" if speed > 0 else "-") * (abs(speed) // 50) if speed != 0 else "|"
+                        print(f"  pitch={pitch:+.3f} rad  speed={speed:+5d}  {bar}", flush=True)
+                        last_speed = speed
+
+            finally:
+                # ── 4. Restore hardware state ─────────────────────────────────
+                await ws.send(json.dumps({"target": "hub", "data": f"motor:{MOTOR_PORT}:stop"}))
+                # ── 3. Unsubscribe ────────────────────────────────────────────
+                await ws.send(json.dumps({"type": "unsubscribe", "sensor": "imu"}))
+                print("\nStopped.")
+
+    except OSError as e:
+        print(f"Cannot connect: {e}\nIs server.py running?")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
