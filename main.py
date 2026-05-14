@@ -64,6 +64,13 @@ for name, port in PORT_MAP:
     except OSError:
         print(">port:" + name + "=none")
 
+try:
+    _bv = hub.battery.voltage()
+    _bi = hub.battery.current()
+    _bc = hub.charger.connected()
+    print(">hub_battery:voltage=" + str(_bv) + ":current=" + str(_bi) + ":charger=" + str(_bc))
+except Exception:
+    pass
 print(">ready")
 
 
@@ -76,9 +83,8 @@ def _emit_imu():
 _STREAM_FNS = {"imu": _emit_imu}
 _streams = {}
 
-_BATT_POLL_MS  = 30000  # poll interval
-_BATT_THRESHOLD = 100   # mV — emit when voltage changes by at least this much
-_batt = {"v": None, "c": None, "ticks": _BATT_POLL_MS - 5000}  # first poll after ~5s
+_BATT_POLL_MS = 30000
+_batt = {"ticks": 0}
 
 
 async def dispatch(cmd):
@@ -375,10 +381,7 @@ async def stream_loop():
                 v = hub.battery.voltage()
                 i = hub.battery.current()
                 c = hub.charger.connected()
-                if _batt["v"] is None or abs(v - _batt["v"]) >= _BATT_THRESHOLD or c != _batt["c"]:
-                    _batt["v"] = v
-                    _batt["c"] = c
-                    print(">hub_battery:voltage=" + str(v) + ":current=" + str(i) + ":charger=" + str(c))
+                print(">hub_battery:voltage=" + str(v) + ":current=" + str(i) + ":charger=" + str(c))
             except Exception as e:
                 print(">hub_battery:error=" + str(e))
 

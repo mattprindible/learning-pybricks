@@ -12,6 +12,7 @@ Run with server.py running and hub connected via iOS app.
   Seam 5: Server state delivery     (new clients receive cached phone_hardware state on connect)
   Seam 6: Connectivity state        (hello includes hub_connected and phone_connected booleans)
   Seam 7: Connectivity broadcast    (hub_disconnected/hub_connected events reach non-sender clients)
+  Seam 8: Hub battery telemetry     (hub_battery cached and replayed to fresh clients; voltage/current/charger fields)
 
 Usage: uv run python tests/seam_check.py
 """
@@ -310,6 +311,42 @@ async def contract_connectivity_event_broadcast():
     return passed("connectivity broadcast — hub_disconnected + hub_connected reach non-sender clients")
 
 
+async def contract_hub_battery_event():
+    """
+    Fresh connection receives cached hub_battery immediately after hello.
+    Proves: hub battery telemetry is emitted by main.py, parsed by server, cached, and replayed.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            msg = json.loads(raw)
+            if msg.get("type") != "hello":
+                return failed("hub battery event", f"first message not hello: {msg}")
+            deadline = asyncio.get_event_loop().time() + 5
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("hub battery event", "no hub_battery — is hub connected and has it reported yet?")
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                msg = json.loads(raw)
+                if msg.get("type") == "hub_battery":
+                    voltage = msg.get("voltage")
+                    current = msg.get("current")
+                    charger = msg.get("charger")
+                    if not isinstance(voltage, int):
+                        return failed("hub battery event", f"voltage not int: {voltage!r}")
+                    if not isinstance(current, int):
+                        return failed("hub battery event", f"current not int: {current!r}")
+                    if not isinstance(charger, bool):
+                        return failed("hub battery event", f"charger not bool: {charger!r}")
+                    print(f"     hub battery: {voltage}mV {current}mA charger={charger}")
+                    return passed("hub battery event — voltage/current/charger replayed to fresh client on connect")
+    except OSError as e:
+        return failed("hub battery event", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("hub battery event", "timed out")
+
+
 async def main():
     print(f"\nConnecting to {WS_URL} ...\n")
     try:
@@ -326,10 +363,11 @@ async def main():
         print(f"Cannot connect: {e}\nIs server.py running?")
         sys.exit(1)
 
-    # Seams 5, 6, and 7 open their own connections
+    # Seams 5, 6, 7, and 8 open their own connections
     results.append(await contract_phone_state_cache())
     results.append(await contract_connectivity_state())
     results.append(await contract_connectivity_event_broadcast())
+    results.append(await contract_hub_battery_event())
 
     print()
     if all(results):

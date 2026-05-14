@@ -54,15 +54,13 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 The hub emits unconditional system-level events independently of the subscribe/stream system. These are broadcast to all connected clients and cached for late-joining clients (like `phone_hardware`).
 
-**Hub battery** — emitted ~5s after startup, then whenever voltage changes ≥100mV or charger state changes (polled every 30s):
+**Hub battery** — emitted once at startup (before `>ready`), then unconditionally every 30s:
 ```json
 {"type": "hub_battery", "voltage": 8200, "current": 150, "charger": false}
 ```
 - `voltage`: mV (Li-ion range roughly 6400–8400mV)
 - `current`: mA (draw at time of reading; varies with motor load)
 - `charger`: `true` if charging cable connected
-
-The 100mV threshold represents roughly 5% of the usable battery range — coarse enough to avoid noise, fine enough to track meaningful discharge. Charger connect/disconnect always emits immediately regardless of voltage delta.
 
 **Design rationale**: Hub battery uses unconditional emission (like phone battery) rather than the subscribe/stream model (like hub:imu) because battery health is relevant to any agent on the bus — it's platform telemetry, not agent-specific data.
 
@@ -345,6 +343,7 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | 5. Server state delivery | Fresh client receives cached `phone_hardware:battery` immediately after hello |
 | 6. Connectivity state | `hello` includes `hub_connected` and `phone_connected` booleans |
 | 7. Connectivity broadcast | `hub_disconnected`/`hub_connected` events reach non-sender clients (synthetic injection) |
+| 8. Hub battery telemetry | `hub_battery` cached and replayed to fresh clients; `voltage`/`current`/`charger` fields present |
 
 **`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
 
@@ -402,7 +401,7 @@ deploy.sh                            Deploy pipeline
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 tests/
-  seam_check.py                      Contract tests for all 7 interface seams
+  seam_check.py                      Contract tests for all 8 interface seams
   test_hardware_multi.py             Multi-client + real-hardware integration scenarios
   test_queue_isolation.py            Per-client queue isolation stress test
   run_integration.sh                 Single-command runner (seam_check → test_hardware_multi)
