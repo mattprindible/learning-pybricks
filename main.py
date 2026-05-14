@@ -76,6 +76,10 @@ def _emit_imu():
 _STREAM_FNS = {"imu": _emit_imu}
 _streams = {}
 
+_BATT_POLL_MS  = 30000  # poll interval
+_BATT_THRESHOLD = 100   # mV — emit when voltage changes by at least this much
+_batt = {"v": None, "c": None, "ticks": _BATT_POLL_MS - 5000}  # first poll after ~5s
+
 
 async def dispatch(cmd):
     if not cmd:
@@ -364,6 +368,19 @@ async def stream_loop():
                     s["fn"]()
                 except Exception as e:
                     print(">stream:error:" + name + ":" + str(e))
+        _batt["ticks"] += 10
+        if _batt["ticks"] >= _BATT_POLL_MS:
+            _batt["ticks"] = 0
+            try:
+                v = hub.battery.voltage()
+                i = hub.battery.current()
+                c = hub.charger.connected()
+                if _batt["v"] is None or abs(v - _batt["v"]) >= _BATT_THRESHOLD or c != _batt["c"]:
+                    _batt["v"] = v
+                    _batt["c"] = c
+                    print(">hub_battery:voltage=" + str(v) + ":current=" + str(i) + ":charger=" + str(c))
+            except Exception as e:
+                print(">hub_battery:error=" + str(e))
 
 
 run_task(multitask(stdin_loop(), stream_loop()))

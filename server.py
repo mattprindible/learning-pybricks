@@ -38,6 +38,7 @@ phone_state_cache: dict[str, str] = {}
 hub_connected: bool = False
 phone_connected: bool = False
 bridge_client = None  # the Client that is the iOS bridge
+hub_battery_cache: str | None = None  # last hub_battery payload; replayed to new clients
 
 
 class Client:
@@ -128,7 +129,7 @@ async def _cleanup_subscriptions(client: Client) -> None:
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
-    global hub_connected, phone_connected, bridge_client
+    global hub_connected, phone_connected, bridge_client, hub_battery_cache
     addr = websocket.remote_address
     log.info("Client connected: %s", addr)
     client = Client(websocket)
@@ -143,6 +144,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
         }))
         for cached in phone_state_cache.values():
             client.send(cached)
+        if hub_battery_cache:
+            client.send(hub_battery_cache)
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
@@ -211,6 +214,23 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                                 payload[k] = v
                     raw_json = json.dumps(payload)
                     for c in subscribers.get(sensor_key, set()).copy():
+                        c.send(raw_json)
+                    continue
+
+                if data.startswith(">hub_battery:"):
+                    parts_data = data[13:].split(":")
+                    payload = {"type": "hub_battery"}
+                    for kv in parts_data:
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            try:
+                                payload[k] = int(v)
+                            except ValueError:
+                                payload[k] = v
+                    payload["charger"] = bool(payload.get("charger", 0))
+                    raw_json = json.dumps(payload)
+                    hub_battery_cache = raw_json
+                    for c in (connected_clients - {client}):
                         c.send(raw_json)
                     continue
 
