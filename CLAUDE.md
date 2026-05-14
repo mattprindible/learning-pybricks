@@ -75,7 +75,17 @@ The hub emits unconditional system-level events independently of the subscribe/s
 - `level`: 0.0–1.0 (`-1.0` if unknown)
 - `state`: `"charging"` | `"full"` | `"unplugged"` | `"unknown"`
 
-**Adding new phone sensors**: add a method to `PhoneHardwareManager` that calls `events.send(...)` with `type: "phone_hardware"` and a `sensor` key. Wire notifications or timers in `init()`. No server or hub changes needed.
+**Camera** — subscribe-only stream; not cached. Subscribe with `{"type": "subscribe", "sensor": "camera"}`:
+```json
+{"type": "phone_hardware", "sensor": "camera", "frame": "<base64 JPEG>", "width": 640, "height": 480, "timestamp_ms": 1234567890123}
+```
+- `frame`: base64-encoded JPEG at quality 0.5
+- `width` / `height`: pixels (640×480 at `.vga640x480` preset)
+- `timestamp_ms`: CMSampleBuffer presentation timestamp in milliseconds
+- Rear camera, fixed 10 fps, landscape-right orientation (0° rotation, natural sensor orientation)
+- Server does **not** cache camera frames — they are stream-only, never replayed to new clients
+
+**Adding new phone sensors**: add a method to `PhoneHardwareManager` that calls `events.send(...)` with `type: "phone_hardware"` and a `sensor` key. Wire notifications or timers in `init()`. No server or hub changes needed. If the sensor is high-frequency and should never be replayed as a stale snapshot, add its name to `STREAM_ONLY_SENSORS` in `server.py`.
 
 **Composition pattern**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response. Example — battery state drives hub light color:
 ```python
@@ -87,7 +97,7 @@ if msg.get("type") == "phone_hardware" and msg.get("sensor") == "battery":
             c.send(cmd)
 ```
 
-**Timing**: `emitCurrentState()` fires when the iOS app connects to the server. `server.py` caches the last-known payload per sensor and replays all cached states to clients that connect after the iOS app — late-joining agents always receive an initial snapshot without needing to coordinate timing.
+**Timing**: `emitCurrentState()` fires when the iOS app connects to the server. `server.py` caches the last-known payload per sensor (excluding `STREAM_ONLY_SENSORS`) and replays all cached states to clients that connect after the iOS app — late-joining agents always receive an initial snapshot without needing to coordinate timing.
 
 ## Connectivity state
 
@@ -349,6 +359,8 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 | 6. Connectivity state | `hello` includes `hub_connected` and `phone_connected` booleans |
 | 7. Connectivity broadcast | `hub_disconnected`/`hub_connected` events reach non-sender clients (synthetic injection) |
 | 8. Hub battery telemetry | `hub_battery` cached and replayed to fresh clients; `voltage`/`current`/`charger` fields present |
+| 9. Camera stream | subscribe → `phone_hardware:camera{frame,width,height,timestamp_ms}` → JPEG magic verified → unsubscribe |
+| 10. Camera not cached | camera frames bypass `phone_state_cache`; non-subscribers don't receive frames (`STREAM_ONLY_SENSORS`) |
 
 **`tests/test_hardware_multi.py`** — multi-client behavioral scenarios (~30s).
 

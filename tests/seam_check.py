@@ -13,10 +13,13 @@ Run with server.py running and hub connected via iOS app.
   Seam 6: Connectivity state        (hello includes hub_connected and phone_connected booleans)
   Seam 7: Connectivity broadcast    (hub_disconnected/hub_connected events reach non-sender clients)
   Seam 8: Hub battery telemetry     (hub_battery cached and replayed to fresh clients; voltage/current/charger fields)
+  Seam 9: Camera stream             (subscribe → phone_hardware:camera with JPEG frame → unsubscribe)
+  Seam 10: Camera not cached        (camera frames bypass phone_state_cache; non-subscribers don't receive frames)
 
 Usage: uv run python tests/seam_check.py
 """
 import asyncio
+import base64
 import json
 import sys
 import websockets
@@ -349,6 +352,110 @@ async def contract_hub_battery_event():
         return failed("hub battery event", "timed out")
 
 
+# --- Seam 9: Camera stream ---
+
+async def contract_camera_stream():
+    """
+    Subscribe to camera → phone_hardware:camera frames arrive with correct schema → unsubscribe.
+    Proves: iOS bridge starts camera on subscribe, JPEG frames reach the bus, schema fields present.
+    Skips first 5 frames to allow auto-exposure to settle.
+    Opens its own connection.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            if json.loads(raw).get("type") != "hello":
+                return failed("camera stream", "first message not hello")
+
+            await ws.send(json.dumps({"type": "subscribe", "sensor": "camera"}))
+
+            frame = None
+            frames_seen = 0
+            deadline = asyncio.get_event_loop().time() + 10
+            while frame is None:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("camera stream", "timed out — is iOS app running with camera permission?")
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                msg = json.loads(raw)
+                if msg.get("type") == "phone_hardware" and msg.get("sensor") == "camera":
+                    frames_seen += 1
+                    if frames_seen >= 5:
+                        frame = msg
+
+            for field, typ in (("frame", str), ("width", int), ("height", int), ("timestamp_ms", int)):
+                if not isinstance(frame.get(field), typ):
+                    return failed("camera stream", f"{field!r} missing or wrong type: {frame.get(field)!r}")
+
+            frame_bytes = base64.b64decode(frame["frame"])
+            if frame_bytes[:2] != b'\xff\xd8':
+                return failed("camera stream", f"frame is not JPEG (magic: {frame_bytes[:2].hex()})")
+
+            await ws.send(json.dumps({"type": "unsubscribe", "sensor": "camera"}))
+            print(f"     camera frame: {frame['width']}x{frame['height']} {len(frame_bytes):,} bytes JPEG")
+            return passed("camera stream — subscribe→phone_hardware:camera{frame,width,height,timestamp_ms}→unsubscribe")
+
+    except OSError as e:
+        return failed("camera stream", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("camera stream", "timed out")
+
+
+# --- Seam 10: Camera not cached ---
+
+async def contract_camera_not_cached():
+    """
+    Camera frames bypass phone_state_cache (STREAM_ONLY_SENSORS).
+    While client A has camera subscribed (frames flowing), fresh client B must NOT
+    receive a camera frame — neither as a cached replay nor as a live delivery to a non-subscriber.
+    Opens its own connections.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws_a:
+            await asyncio.wait_for(ws_a.recv(), timeout=5)  # hello
+
+            # Subscribe and wait until at least one frame is confirmed flowing
+            await ws_a.send(json.dumps({"type": "subscribe", "sensor": "camera"}))
+            deadline = asyncio.get_event_loop().time() + 10
+            stream_live = False
+            while not stream_live:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("camera not cached", "camera stream never started — is iOS app running?")
+                raw = await asyncio.wait_for(ws_a.recv(), timeout=remaining)
+                if json.loads(raw).get("sensor") == "camera":
+                    stream_live = True
+
+            # Stream is live — connect a fresh client and watch for 1.5s
+            async with websockets.connect(WS_URL) as ws_b:
+                await asyncio.wait_for(ws_b.recv(), timeout=5)  # hello
+                got_camera = False
+                try:
+                    drain_end = asyncio.get_event_loop().time() + 1.5
+                    while True:
+                        remaining = drain_end - asyncio.get_event_loop().time()
+                        if remaining <= 0:
+                            break
+                        msg = json.loads(await asyncio.wait_for(ws_b.recv(), timeout=remaining))
+                        if msg.get("type") == "phone_hardware" and msg.get("sensor") == "camera":
+                            got_camera = True
+                            break
+                except asyncio.TimeoutError:
+                    pass
+
+                if got_camera:
+                    return failed("camera not cached",
+                                  "camera frame delivered to non-subscribing client — STREAM_ONLY_SENSORS broken")
+
+            await ws_a.send(json.dumps({"type": "unsubscribe", "sensor": "camera"}))
+            return passed("camera not cached — frames not cached, not delivered to non-subscribers")
+
+    except OSError as e:
+        return failed("camera not cached", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("camera not cached", "timed out")
+
+
 async def main():
     print(f"\nConnecting to {WS_URL} ...\n")
     try:
@@ -365,11 +472,13 @@ async def main():
         print(f"Cannot connect: {e}\nIs server.py running?")
         sys.exit(1)
 
-    # Seams 5, 6, 7, and 8 open their own connections
+    # Seams 5–10 open their own connections
     results.append(await contract_phone_state_cache())
     results.append(await contract_connectivity_state())
     results.append(await contract_connectivity_event_broadcast())
     results.append(await contract_hub_battery_event())
+    results.append(await contract_camera_stream())
+    results.append(await contract_camera_not_cached())
 
     print()
     if all(results):

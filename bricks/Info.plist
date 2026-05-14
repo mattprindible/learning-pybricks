@@ -22,6 +22,8 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Used to connect to your LEGO Inventor Hub.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Used to stream camera frames to agents on the bricks server.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Used to find the bricks server on your local network.</string>
 	<key>NSBonjourServices</key>

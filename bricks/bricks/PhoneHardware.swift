@@ -1,14 +1,18 @@
+import AVFoundation
 import Combine
 import CoreMotion
 import SwiftUI
 
-class PhoneHardwareManager {
+class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let events = PassthroughSubject<[String: Any], Never>()
 
     private var cancellables = Set<AnyCancellable>()
     private let motion = CMMotionManager()
+    private var captureSession: AVCaptureSession?
+    private let cameraQueue = DispatchQueue(label: "com.bricks.camera", qos: .userInitiated)
 
-    init() {
+    override init() {
+        super.init()
         UIDevice.current.isBatteryMonitoringEnabled = true
 
         NotificationCenter.default
@@ -25,11 +29,15 @@ class PhoneHardwareManager {
 
     func handleCommand(_ command: String) {
         switch command {
-        case "start_imu": startIMU()
-        case "stop_imu":  stopIMU()
+        case "start_imu":    startIMU()
+        case "stop_imu":     stopIMU()
+        case "start_camera": startCamera()
+        case "stop_camera":  stopCamera()
         default: break
         }
     }
+
+    // MARK: - IMU
 
     private func startIMU() {
         guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
@@ -49,6 +57,90 @@ class PhoneHardwareManager {
     private func stopIMU() {
         motion.stopDeviceMotionUpdates()
     }
+
+    // MARK: - Camera
+
+    private func startCamera() {
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard granted, let self else { return }
+            self.cameraQueue.async { self._startCaptureSession() }
+        }
+    }
+
+    private func stopCamera() {
+        cameraQueue.async { [weak self] in
+            self?.captureSession?.stopRunning()
+            self?.captureSession = nil
+        }
+    }
+
+    private func _startCaptureSession() {
+        let session = AVCaptureSession()
+        session.sessionPreset = .vga640x480
+
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else { return }
+        session.addInput(input)
+
+        // Limit to 10 fps to match the server's default stream interval
+        try? device.lockForConfiguration()
+        let frameInterval = CMTime(value: 1, timescale: 10)
+        device.activeVideoMinFrameDuration = frameInterval
+        device.activeVideoMaxFrameDuration = frameInterval
+        device.unlockForConfiguration()
+
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        output.setSampleBufferDelegate(self, queue: cameraQueue)
+
+        guard session.canAddOutput(output) else { return }
+        session.addOutput(output)
+
+        // Fix orientation: 0° = landscape right (natural sensor orientation)
+        if let connection = output.connection(with: .video),
+           connection.isVideoRotationAngleSupported(0) {
+            connection.videoRotationAngle = 0
+        }
+
+        captureSession = session
+        session.startRunning()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+
+        let width      = CVPixelBufferGetWidth(imageBuffer)
+        let height     = CVPixelBufferGetHeight(imageBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+        let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer)
+
+        // kCVPixelFormatType_32BGRA: byteOrder32Little + noneSkipFirst maps B→G→R→A in memory
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
+                                              | CGBitmapInfo.byteOrder32Little.rawValue)
+        guard let ctx = CGContext(data: baseAddress, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: bitmapInfo.rawValue),
+              let cgImage = ctx.makeImage() else { return }
+
+        guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
+        let timestampMs = Int64(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds * 1000)
+        events.send([
+            "type":         "phone_hardware",
+            "sensor":       "camera",
+            "frame":        jpegData.base64EncodedString(),
+            "width":        width,
+            "height":       height,
+            "timestamp_ms": timestampMs,
+        ])
+    }
+
+    // MARK: - Battery
 
     private func emitBattery() {
         let level = UIDevice.current.batteryLevel

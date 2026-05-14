@@ -15,6 +15,8 @@ SERVICE_NAME = "bricks._bricks._tcp.local."
 SEND_QUEUE_SIZE = 64
 SEND_TIMEOUT = 5.0
 DROP_LOG_INTERVAL = 20
+# Sensors whose frames are never cached or replayed to new clients (high-frequency streams, not snapshots)
+STREAM_ONLY_SENSORS: set[str] = {"camera"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -175,7 +177,12 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             except json.JSONDecodeError:
                 log.warning("Non-JSON message from %s: %r", addr, raw)
                 continue
-            log.info("Received from %s: %s", client.label(), msg)
+            if msg.get("type") == "phone_hardware" and msg.get("sensor") == "camera":
+                log.debug("Received from %s: camera frame %dx%d (%d chars)",
+                          client.label(), msg.get("width", 0), msg.get("height", 0),
+                          len(msg.get("frame", "")))
+            else:
+                log.info("Received from %s: %s", client.label(), msg)
             if msg.get("type") == "hub_stdout" and not msg.get("data", "").startswith(">"):
                 continue
 
@@ -273,7 +280,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             # phone_hardware: cache latest state, then route to subscribers or broadcast
             if msg.get("type") == "phone_hardware":
                 sensor = msg.get("sensor", "")
-                if sensor:
+                if sensor and sensor not in STREAM_ONLY_SENSORS:
                     phone_state_cache[sensor] = raw
                 targets = subscribers[sensor].copy() if sensor in subscribers else connected_clients - {client}
                 for c in targets:
