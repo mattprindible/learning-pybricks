@@ -64,6 +64,10 @@ async def session(ws: websockets.ClientConnection) -> None:
             if msg.get("type") == "hub_connected":
                 hub_live = True
                 print("Hub reconnected — resuming")
+                # Re-issue startup hardware commands: hub_connected means main.py
+                # restarted, so any state set at session start (lights, modes, etc.)
+                # has been lost and must be re-applied.
+                await ws.send(json.dumps({"target": "hub", "data": "hub:light:on:BLUE"}))
                 continue
 
             if msg.get("type") == "hub_stream" and msg.get("sensor") == "hub:imu":
