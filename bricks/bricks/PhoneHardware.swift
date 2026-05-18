@@ -5,13 +5,22 @@ import CoreMotion
 import SwiftUI
 import Vision
 
-class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, CLLocationManagerDelegate {
     let events = PassthroughSubject<[String: Any], Never>()
 
     private var cancellables = Set<AnyCancellable>()
     private let motion = CMMotionManager()
+    private let altimeter = CMAltimeter()
+    private let activityManager = CMMotionActivityManager()
     private var captureSession: AVCaptureSession?
     private let cameraQueue = DispatchQueue(label: "com.bricks.camera", qos: .userInitiated)
+    private lazy var locationManager: CLLocationManager = {
+        let m = CLLocationManager()
+        m.delegate = self
+        m.desiredAccuracy = kCLLocationAccuracyBest
+        m.distanceFilter = kCLDistanceFilterNone
+        return m
+    }()
 
     override init() {
         super.init()
@@ -120,10 +129,18 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
               let sensor = command["sensor"] as? String else { return }
         let interval = command["interval"] as? Double ?? 100
         switch (action, sensor) {
-        case ("start", "imu"):    startIMU(interval: interval)
-        case ("stop",  "imu"):    stopIMU()
-        case ("start", "camera"): startCamera()
-        case ("stop",  "camera"): stopCamera()
+        case ("start", "imu"):      startIMU(interval: interval)
+        case ("stop",  "imu"):      stopIMU()
+        case ("start", "camera"):   startCamera()
+        case ("stop",  "camera"):   stopCamera()
+        case ("start", "location"):        startLocation()
+        case ("stop",  "location"):        stopLocation()
+        case ("start", "heading"):         startHeading()
+        case ("stop",  "heading"):         stopHeading()
+        case ("start", "altimeter"):       startAltimeter()
+        case ("stop",  "altimeter"):       stopAltimeter()
+        case ("start", "motion_activity"): startMotionActivity()
+        case ("stop",  "motion_activity"): stopMotionActivity()
         default: break
         }
     }
@@ -147,6 +164,111 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func stopIMU() {
         motion.stopDeviceMotionUpdates()
+    }
+
+    // MARK: - Location + Heading
+
+    private func startLocation() {
+        locationManager.requestWhenInUseAuthorization()
+        locationManager.startUpdatingLocation()
+    }
+
+    private func stopLocation() {
+        locationManager.stopUpdatingLocation()
+    }
+
+    private func startHeading() {
+        guard CLLocationManager.headingAvailable() else { return }
+        locationManager.startUpdatingHeading()
+    }
+
+    private func stopHeading() {
+        locationManager.stopUpdatingHeading()
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let loc = locations.last else { return }
+        events.send([
+            "type":        "phone_hardware",
+            "sensor":      "location",
+            "lat":         loc.coordinate.latitude,
+            "lon":         loc.coordinate.longitude,
+            "altitude":    loc.altitude,
+            "speed":       loc.speed,
+            "course":      loc.course,
+            "h_accuracy":  loc.horizontalAccuracy,
+            "v_accuracy":  loc.verticalAccuracy,
+            "timestamp_ms": Int64(loc.timestamp.timeIntervalSince1970 * 1000),
+        ])
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        events.send([
+            "type":             "phone_hardware",
+            "sensor":           "heading",
+            "magnetic_heading": newHeading.magneticHeading,
+            "true_heading":     newHeading.trueHeading,
+            "accuracy":         newHeading.headingAccuracy,
+            "x":                newHeading.x,
+            "y":                newHeading.y,
+            "z":                newHeading.z,
+            "timestamp_ms":     Int64(newHeading.timestamp.timeIntervalSince1970 * 1000),
+        ])
+    }
+
+    // MARK: - Altimeter
+
+    private func startAltimeter() {
+        guard CMAltimeter.isRelativeAltitudeAvailable() else { return }
+        altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] data, error in
+            guard let self, let data, error == nil else { return }
+            self.events.send([
+                "type":        "phone_hardware",
+                "sensor":      "altimeter",
+                "altitude":    data.relativeAltitude.doubleValue,
+                "pressure":    data.pressure.doubleValue,
+                "timestamp_ms": Int64(Date().timeIntervalSince1970 * 1000),
+            ])
+        }
+    }
+
+    private func stopAltimeter() {
+        altimeter.stopRelativeAltitudeUpdates()
+    }
+
+    // MARK: - Motion Activity
+
+    private func startMotionActivity() {
+        guard CMMotionActivityManager.isActivityAvailable() else { return }
+        activityManager.startActivityUpdates(to: .main) { [weak self] activity in
+            guard let self, let activity else { return }
+            let type: String
+            switch true {
+            case activity.automotive: type = "automotive"
+            case activity.running:    type = "running"
+            case activity.walking:    type = "walking"
+            case activity.cycling:    type = "cycling"
+            case activity.stationary: type = "stationary"
+            default:                  type = "unknown"
+            }
+            let confidence: String
+            switch activity.confidence {
+            case .high:   confidence = "high"
+            case .medium: confidence = "medium"
+            default:      confidence = "low"
+            }
+            self.events.send([
+                "type":         "phone_hardware",
+                "sensor":       "motion_activity",
+                "activity":     type,
+                "confidence":   confidence,
+                "timestamp_ms": Int64(activity.startDate.timeIntervalSince1970 * 1000),
+            ])
+        }
+    }
+
+    private func stopMotionActivity() {
+        activityManager.stopActivityUpdates()
     }
 
     // MARK: - Camera
