@@ -42,6 +42,7 @@ hub_connected: bool = False
 phone_connected: bool = False
 bridge_client = None  # the Client that is the iOS bridge
 hub_battery_cache: str | None = None  # last hub_battery payload; replayed to new clients
+phone_manifest_cache: str | None = None  # last phone_connected manifest; replayed to new clients
 
 
 class Client:
@@ -154,7 +155,7 @@ async def _cleanup_subscriptions(client: Client) -> None:
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
-    global hub_connected, phone_connected, bridge_client, hub_battery_cache
+    global hub_connected, phone_connected, bridge_client, hub_battery_cache, phone_manifest_cache
     addr = websocket.remote_address
     log.info("Client connected: %s", addr)
     client = Client(websocket)
@@ -168,6 +169,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             "hub_connected": hub_connected,
             "phone_connected": phone_connected,
         }))
+        if phone_manifest_cache:
+            client.send(phone_manifest_cache)
         for cached in phone_state_cache.values():
             client.send(cached)
         if hub_battery_cache:
@@ -196,10 +199,13 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             if msg.get("type") == "phone_connected":
                 phone_connected = True
                 bridge_client = client
-                log.info("Phone connected (bridge: %s)", client.label())
-                broadcast = json.dumps({"type": "phone_connected"})
+                phone_manifest_cache = raw
+                hw = msg.get("hardware", {})
+                log.info("Phone connected (bridge: %s) device=%s os=%s gps=%s lidar=%s cameras=%s",
+                         client.label(), msg.get("device", "?"), msg.get("os", "?"),
+                         hw.get("gps"), hw.get("lidar"), hw.get("cameras"))
                 for c in (connected_clients - {client}):
-                    c.send(broadcast)
+                    c.send(raw)
                 await _recover_phone_subscriptions()
                 continue
 
@@ -306,6 +312,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             bridge_client = None
             phone_connected = False
             hub_connected = False
+            phone_manifest_cache = None
             for c in connected_clients.copy():
                 c.send(json.dumps({"type": "hub_disconnected"}))
                 c.send(json.dumps({"type": "phone_disconnected"}))

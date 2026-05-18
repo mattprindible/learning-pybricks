@@ -1,7 +1,9 @@
 import AVFoundation
 import Combine
+import CoreLocation
 import CoreMotion
 import SwiftUI
+import Vision
 
 class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let events = PassthroughSubject<[String: Any], Never>()
@@ -21,6 +23,92 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 .publisher(for: UIDevice.batteryStateDidChangeNotification))
             .sink { [weak self] _ in self?.emitBattery() }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Manifest
+
+    func manifest() -> [String: Any] {
+        let device = UIDevice.current
+        let motionMgr = CMMotionManager()
+
+        var cameras: [String] = []
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera,
+                          .builtInTelephotoCamera, .builtInTrueDepthCamera],
+            mediaType: .video, position: .unspecified)
+        for cam in discoverySession.devices {
+            let pos = cam.position == .front ? "front" : "back"
+            let type_: String
+            switch cam.deviceType {
+            case .builtInUltraWideCamera:  type_ = "ultrawide"
+            case .builtInTelephotoCamera:  type_ = "tele"
+            case .builtInTrueDepthCamera:  type_ = "truedepth"
+            default:                       type_ = "wide"
+            }
+            cameras.append("\(pos)_\(type_)")
+        }
+
+        var visionCaps: [String] = ["saliency", "text", "rectangles"]
+        if #available(iOS 13.0, *) { visionCaps.append("animals") }
+        if #available(iOS 14.0, *) { visionCaps.append("pose") }
+        if #available(iOS 15.0, *) { visionCaps.append("hand_pose") }
+
+        let locStatus = CLLocationManager.authorizationStatus()
+        let locPermission: String
+        switch locStatus {
+        case .authorizedAlways, .authorizedWhenInUse: locPermission = "authorized"
+        case .denied, .restricted:                    locPermission = "denied"
+        default:                                      locPermission = "not_determined"
+        }
+
+        let camStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        func avPerm(_ s: AVAuthorizationStatus) -> String {
+            switch s {
+            case .authorized:             return "authorized"
+            case .denied, .restricted:   return "denied"
+            default:                     return "not_determined"
+            }
+        }
+
+        let motionPerm: String
+        switch CMMotionActivityManager.authorizationStatus() {
+        case .authorized:             motionPerm = "authorized"
+        case .denied, .restricted:   motionPerm = "denied"
+        default:                     motionPerm = "not_determined"
+        }
+
+        let battery: [String: Any] = [
+            "level": device.batteryLevel,
+            "state": { switch device.batteryState {
+                case .charging:  return "charging"
+                case .full:      return "full"
+                case .unplugged: return "unplugged"
+                default:         return "unknown"
+            }}()
+        ]
+
+        return [
+            "type":   "phone_connected",
+            "device": device.model,
+            "os":     "\(device.systemName) \(device.systemVersion)",
+            "hardware": [
+                "gps":        CLLocationManager.locationServicesEnabled(),
+                "compass":    CLLocationManager.headingAvailable(),
+                "barometer":  CMAltimeter.isRelativeAltitudeAvailable(),
+                "motion":     motionMgr.isDeviceMotionAvailable,
+                "pedometer":  CMPedometer.isStepCountingAvailable(),
+                "cameras":    cameras,
+            ],
+            "vision_capabilities": visionCaps,
+            "permissions": [
+                "location":  locPermission,
+                "camera":    avPerm(camStatus),
+                "microphone": avPerm(micStatus),
+                "motion":    motionPerm,
+            ],
+            "battery": battery,
+        ]
     }
 
     func emitCurrentState() {

@@ -32,7 +32,7 @@ private class AppCoordinator: ObservableObject {
             .sink { [weak self] _ in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.server.connectionState == .connected else { return }
-                    self.server.send(["type": "phone_connected"])
+                    self.server.send(self.phone.manifest())
                     if self.hub.isHubReady {
                         self.server.send(["type": "hub_connected"])
                     }
