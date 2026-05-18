@@ -27,21 +27,24 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         emitBattery()
     }
 
-    func handleCommand(_ command: String) {
-        switch command {
-        case "start_imu":    startIMU()
-        case "stop_imu":     stopIMU()
-        case "start_camera": startCamera()
-        case "stop_camera":  stopCamera()
+    func handleCommand(_ command: [String: Any]) {
+        guard let action = command["action"] as? String,
+              let sensor = command["sensor"] as? String else { return }
+        let interval = command["interval"] as? Double ?? 100
+        switch (action, sensor) {
+        case ("start", "imu"):    startIMU(interval: interval)
+        case ("stop",  "imu"):    stopIMU()
+        case ("start", "camera"): startCamera()
+        case ("stop",  "camera"): stopCamera()
         default: break
         }
     }
 
     // MARK: - IMU
 
-    private func startIMU() {
+    private func startIMU(interval: Double = 100) {
         guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
-        motion.deviceMotionUpdateInterval = 1.0 / 10.0
+        motion.deviceMotionUpdateInterval = interval / 1000.0
         motion.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
             guard let self, let data else { return }
             self.events.send([

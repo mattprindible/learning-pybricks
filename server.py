@@ -87,7 +87,7 @@ subscribers: dict[str, set[Client]] = {}
 stream_intervals: dict[str, int] = {}
 
 
-async def _phone_command(command: str) -> None:
+async def _phone_command(command: dict) -> None:
     msg = json.dumps({"target": "phone", "command": command})
     for c in connected_clients.copy():
         c.send(msg)
@@ -104,8 +104,9 @@ async def _recover_subscriptions() -> None:
 async def _recover_phone_subscriptions() -> None:
     for sensor in list(subscribers):
         if not sensor.startswith("hub:"):
-            await _phone_command(f"start_{sensor}")
-            log.info("Recovered phone stream subscription: %s", sensor)
+            interval = stream_intervals.get(sensor, 100)
+            await _phone_command({"action": "start", "sensor": sensor, "interval": interval})
+            log.info("Recovered phone stream subscription: %s at %dms", sensor, interval)
 
 
 async def _hub_command(command: str) -> None:
@@ -122,7 +123,7 @@ async def _subscribe(client: Client, sensor: str, interval: int = 100) -> None:
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:start:{sensor[4:]}:{interval}")
         else:
-            await _phone_command(f"start_{sensor}")
+            await _phone_command({"action": "start", "sensor": sensor, "interval": interval})
         log.info("Started %s stream at %dms (first subscriber: %s)", sensor, interval, client.label())
     elif sensor.startswith("hub:") and interval < stream_intervals.get(sensor, interval):
         stream_intervals[sensor] = interval
@@ -142,7 +143,7 @@ async def _unsubscribe(client: Client, sensor: str) -> None:
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:stop:{sensor[4:]}")
         else:
-            await _phone_command(f"stop_{sensor}")
+            await _phone_command({"action": "stop", "sensor": sensor})
         log.info("Stopped %s stream (no subscribers)", sensor)
 
 

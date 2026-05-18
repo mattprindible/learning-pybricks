@@ -25,7 +25,7 @@ class ServerConnectionManager: NSObject, ObservableObject {
     @Published var connectionState: ServerConnectionState = .searching
     let commands = PassthroughSubject<String, Never>()
     let hubInput = PassthroughSubject<String, Never>()
-    let phoneInput = PassthroughSubject<String, Never>()
+    let phoneInput = PassthroughSubject<[String: Any], Never>()
 
     // Slow path (bootstrap only)
     private var browser: NWBrowser?
@@ -258,7 +258,7 @@ class ServerConnectionManager: NSObject, ObservableObject {
         if let target = json["target"] as? String {
             if target == "hub", let data = json["data"] as? String {
                 hubInput.send(data)
-            } else if target == "phone", let command = json["command"] as? String {
+            } else if target == "phone", let command = json["command"] as? [String: Any] {
                 phoneInput.send(command)
             }
         }
