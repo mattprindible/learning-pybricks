@@ -54,7 +54,7 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **`hub_connected` is tied to `>ready`**, not BLE connection — because the dispatch loop isn't accepting commands until `main.py` finishes startup. On hub reconnect, server calls `_recover_subscriptions()` to re-send active stream subscriptions.
 
-**Open phone sensor key**: Any `sensor` value works in `phone_hardware` messages. Add a new sensor to `PhoneHardwareManager.handleCommand()` and call `events.send(...)` with `type: "phone_hardware"` and a `sensor` key — no server changes needed. For high-frequency sensors that should never be cached as stale snapshots (like camera), add the name to `STREAM_ONLY_SENSORS` in `server.py`.
+**Open phone sensor key**: Any `sensor` value works in `phone_hardware` messages. Add a new `("start"|"stop", "sensor_name")` case to `PhoneHardwareManager.handleCommand()` and emit `phone_hardware` events with a `sensor` key — no server changes needed. Phone commands are JSON dicts (not colon-delimited) because they go WebSocket→WebSocket and have no BLE constraint. For high-frequency sensors that should never be cached as stale snapshots (like camera), add the name to `STREAM_ONLY_SENSORS` in `server.py`.
 
 **Phone→hub composition**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response — see `examples/battery_light.py` for a working example.
 
@@ -91,6 +91,93 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 **Safe state on agent exit**: Each agent is responsible for stopping its own hardware in a `finally` block. The server does not intervene — it can't know which motors belong to which agent, and a blanket stop would silently interrupt other agents running concurrently. Example: `await ws.send(json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"}))`
 
 **`exec()` works in Pybricks MicroPython**: `exec(code, globals())` executes arbitrary Python with full access to the hub's runtime globals. This makes `main.py` a live REPL over WebSocket — new hub behaviours can be sent as code strings without redeploying. Discovered empirically 2026-05-09.
+
+## Phone sensor protocol
+
+Subscribe to phone sensors the same way as hub streams: `{"type": "subscribe", "sensor": "SENSOR", "interval": MS}`. The server sends `{"target": "phone", "command": {"action": "start", "sensor": "SENSOR", "interval": MS}}` to the iOS bridge. The bridge emits `phone_hardware` events routed to subscribers.
+
+**Phone→server command format** (JSON dict, not colon-delimited — no BLE constraint):
+```json
+{"target": "phone", "command": {"action": "start"|"stop", "sensor": "NAME", "interval": MS}}
+```
+
+**Available sensors and their event schemas:**
+
+```
+battery          →  {"type": "phone_hardware", "sensor": "battery",
+                      "level": FLOAT (0–1), "state": "charging"|"full"|"unplugged"|"unknown"}
+                     — event-driven (fires on change, not polled); interval ignored
+
+imu              →  {"type": "phone_hardware", "sensor": "imu",
+                      "accel":    {"x": F, "y": F, "z": F},   (g; gravity-subtracted user acceleration)
+                      "gyro":     {"x": F, "y": F, "z": F},   (rad/s)
+                      "attitude": {"roll": F, "pitch": F, "yaw": F}}  (rad)
+                     — rate controlled by interval (ms → deviceMotionUpdateInterval)
+
+location         →  {"type": "phone_hardware", "sensor": "location",
+                      "lat": F, "lon": F,          (degrees; WGS84)
+                      "altitude": F,               (meters above sea level)
+                      "speed": F,                  (m/s; -1 if unavailable)
+                      "course": F,                 (degrees from true north; -1 if unavailable)
+                      "h_accuracy": F,             (meters)
+                      "v_accuracy": F,             (meters)
+                      "timestamp_ms": INT}
+                     — rate set by CoreLocation (hardware-driven, ~1 Hz outdoors); interval ignored
+                     — requires NSLocationWhenInUseUsageDescription permission
+
+heading          →  {"type": "phone_hardware", "sensor": "heading",
+                      "magnetic_heading": F,       (degrees; 0 = magnetic north)
+                      "true_heading": F,           (degrees; 0 = true north; -1 if unavailable)
+                      "accuracy": F,               (degrees; -1 if uncalibrated)
+                      "x": F, "y": F, "z": F,      (µT; raw magnetometer)
+                      "timestamp_ms": INT}
+                     — shares CLLocationManager with location; both can run simultaneously
+                     — only available on devices with a magnetometer (check manifest hardware.compass)
+
+altimeter        →  {"type": "phone_hardware", "sensor": "altimeter",
+                      "altitude": F,               (meters; relative to session start, not sea level)
+                      "pressure": F,               (kPa)
+                      "timestamp_ms": INT}
+                     — hardware-driven (~1 Hz); interval ignored
+                     — only available on devices with a barometer (check manifest hardware.barometer)
+
+motion_activity  →  {"type": "phone_hardware", "sensor": "motion_activity",
+                      "activity":   "stationary"|"walking"|"running"|"cycling"|"automotive"|"unknown",
+                      "confidence": "low"|"medium"|"high",
+                      "timestamp_ms": INT}
+                     — fires on transition, not on a fixed interval; interval ignored
+                     — requires NSMotionUsageDescription permission
+
+camera           →  {"type": "phone_hardware", "sensor": "camera",
+                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)
+                      "width": INT, "height": INT,
+                      "timestamp_ms": INT}
+                     — never cached (STREAM_ONLY_SENSORS); interval ignored (hardware-capped at 10 fps)
+```
+
+**phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):
+```json
+{
+  "type":   "phone_connected",
+  "device": "iPhone15,2",
+  "os":     "iOS 17.4",
+  "hardware": {
+    "gps": true, "compass": true, "barometer": true,
+    "motion": true, "pedometer": true,
+    "cameras": ["back_wide", "back_ultrawide", "back_tele", "front_truedepth"]
+  },
+  "vision_capabilities": ["saliency", "text", "rectangles", "animals", "pose", "hand_pose"],
+  "permissions": {
+    "location": "authorized"|"denied"|"not_determined",
+    "camera":   "authorized"|"denied"|"not_determined",
+    "microphone": "authorized"|"denied"|"not_determined",
+    "motion":   "authorized"|"denied"|"not_determined"
+  },
+  "battery": {"level": 0.87, "state": "charging"}
+}
+```
+
+**Adding a new phone sensor**: add a `("start"|"stop", "sensor_name")` case to `handleCommand` in `PhoneHardware.swift` and emit `phone_hardware` events. No server changes needed. For sensors that should never be cached as snapshots (high-frequency, always-stale data), add to `STREAM_ONLY_SENSORS` in `server.py`.
 
 ## Hub command protocol
 
