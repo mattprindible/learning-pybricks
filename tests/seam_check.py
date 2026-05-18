@@ -531,6 +531,58 @@ async def contract_phone_battery_cache():
         return failed("phone battery cache", "timed out")
 
 
+async def contract_phone_manifest():
+    """
+    Announcement pattern: on connect, every client receives the phone_connected manifest
+    replayed from cache immediately after hello. The manifest is self-describing — it
+    includes device identity, hardware capabilities (GPS, compass, barometer, cameras by
+    type/position), Vision framework support, permission status, and battery state.
+    Agents use this to know what they can ask for before issuing any sensor commands,
+    without probing or enumerating capabilities separately.
+    """
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if msg.get("type") != "hello":
+                return failed("phone manifest", f"first message not hello: {msg}")
+            if not msg.get("phone_connected"):
+                return failed("phone manifest", "phone not connected — is iOS app running and updated?")
+            deadline = asyncio.get_event_loop().time() + 5
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed("phone manifest", "no phone_connected manifest received — is iOS app redeployed?")
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                if msg.get("type") != "phone_connected":
+                    continue
+                for field in ("device", "os"):
+                    if not isinstance(msg.get(field), str):
+                        return failed("phone manifest", f"{field!r} not str: {msg.get(field)!r}")
+                hw = msg.get("hardware", {})
+                for field in ("gps", "compass", "barometer", "motion", "pedometer"):
+                    if not isinstance(hw.get(field), bool):
+                        return failed("phone manifest", f"hardware.{field!r} not bool: {hw.get(field)!r}")
+                if not isinstance(hw.get("cameras"), list):
+                    return failed("phone manifest", f"hardware.cameras not list: {hw.get('cameras')!r}")
+                if not isinstance(msg.get("vision_capabilities"), list):
+                    return failed("phone manifest", "vision_capabilities not list")
+                perms = msg.get("permissions", {})
+                for field in ("location", "camera", "motion"):
+                    if perms.get(field) not in {"authorized", "denied", "not_determined"}:
+                        return failed("phone manifest", f"permissions.{field!r} invalid: {perms.get(field)!r}")
+                battery = msg.get("battery", {})
+                if not isinstance(battery.get("level"), (int, float)):
+                    return failed("phone manifest", f"battery.level not numeric: {battery.get('level')!r}")
+                return passed(
+                    "Announcement pattern: phone_connected manifest replayed to every connecting client — device, hardware, Vision capabilities, permissions, battery",
+                    f"device={msg['device']!r}  cameras={hw.get('cameras')}  vision={msg.get('vision_capabilities')}",
+                )
+    except OSError as e:
+        return failed("phone manifest", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("phone manifest", "timed out")
+
+
 async def contract_connectivity_state():
     """
     Announcement pattern: every hello includes hub_connected and phone_connected as
@@ -595,6 +647,7 @@ async def main():
     section("Announcement")
     results.append(await contract_hub_battery_event())
     results.append(await contract_phone_battery_cache())
+    results.append(await contract_phone_manifest())
     results.append(await contract_connectivity_state())
 
     print(f"\n{'─' * 56}")
