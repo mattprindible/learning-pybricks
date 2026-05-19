@@ -60,6 +60,8 @@ except Exception:
 
     elapsed=$(( $(date +%s) - start_ts ))
     log "server:ok pid=$(cat $PID_FILE) elapsed=${elapsed}s"
+
+    uv run python wait_ready.py
 }
 
 # ---------------------------------------------------------------------------
