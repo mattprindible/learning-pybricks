@@ -53,7 +53,8 @@ server_restart() {
     fi
 
     log "server:start"
-    uv run python server.py >> "$SERVER_LOG" 2>&1 &
+    [[ -f "$SERVER_LOG" ]] && mv "$SERVER_LOG" "${SERVER_LOG}.prev"
+    uv run python server.py > "$SERVER_LOG" 2>&1 &
 
     deadline=$(( $(date +%s) + 15 ))
     while ! python3 -c "
@@ -67,11 +68,16 @@ except Exception:
     sys.exit(1)
 " 2>/dev/null; do
         if [[ $(date +%s) -gt $deadline ]]; then
-            log "server:error reason=TIMEOUT_CONTROL_PORT"
+            log "server:error reason=TIMEOUT_CONTROL_PORT hint=check_server.log"
             exit 1
         fi
         sleep 0.3
     done
+
+    if [[ ! -f "$PID_FILE" ]]; then
+        log "server:error reason=SERVER_PORT_CONFLICT hint=kill_existing_server_on_ports_8765_8766"
+        exit 1
+    fi
 
     elapsed=$(( $(date +%s) - start_ts ))
     log "server:ok pid=$(cat $PID_FILE) elapsed=${elapsed}s"
