@@ -22,27 +22,31 @@ The core idea: AI agents can write code, deploy it to real hardware, and observe
 - Mac with Xcode
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/)
 
-## Running
+## Setup
 
-Start the server (keep it running):
+One-time after clone:
 
 ```bash
-uv run python server.py
+./install_hooks.sh
 ```
 
-The iOS app discovers the server automatically via Bonjour on first launch and caches the direct URL for fast reconnects.
-
 ## Deploying
+
+The deploy pipeline is automatic. Commit to `main.py`, `server.py`, or `bricks/**` and the system is ready before `git commit` returns:
+
+```
+DEPLOY:start changed=main.py
+...
+DEPLOY:success elapsed=20s
+```
+
+To bring everything up from scratch (e.g. after a reboot):
 
 ```bash
 ./deploy.sh
 ```
 
-Requires the server to be running and the iOS app to be connected. The script:
-1. Signals the iOS app via the server to stop the hub program and release BLE
-2. Uploads new hub code via `pybricksdev`
-3. Builds and installs the new iOS app via Xcode + `devicectl`
-4. Launches the app — it reconnects to the hub and auto-starts the program
+`deploy.sh` manages the full lifecycle — server restart, hub upload, iOS build and install — in the right order, and blocks until both the phone and hub confirm they're connected.
 
 ## Observing
 

@@ -8,18 +8,23 @@ Agentic coding eval platform. Physical LEGO hub is the ground truth — agents m
 main.py          Pybricks MicroPython on LEGO Inventor Hub
 bricks/          SwiftUI iOS app — BLE bridge between hub and server
 server.py        asyncio WebSocket server — observation + control point
-deploy.sh        One-command deploy pipeline
+deploy.sh        Automated deploy pipeline — manages server, hub, and iOS
+wait_ready.py    Readiness gate — blocks until phone_connected + hub_connected confirmed
+hooks/           Git hooks (symlinked into .git/hooks/ by install_hooks.sh)
+install_hooks.sh One-time hook setup — run once after clone
 ```
 
 ## Running the system
 
-The server must be running before deploy works:
+One-time setup after clone:
 
 ```bash
-uv run python server.py
+./install_hooks.sh
 ```
 
-Then deploy everything (hub code + iOS app) with:
+After that the system is self-managing. Committing to `main.py`, `server.py`, or `bricks/**` triggers an automatic deploy — the system is confirmed ready before `git commit` returns.
+
+To bring everything up from scratch (no server running, e.g. after a reboot):
 
 ```bash
 ./deploy.sh
@@ -27,14 +32,22 @@ Then deploy everything (hub code + iOS app) with:
 
 ## Deploy sequence
 
-1. `deploy.sh` sends `hub_disconnect\n` to `localhost:8766` (control TCP port)
-2. `server.py` receives it and broadcasts `{"type": "hub_disconnect"}` to all WebSocket clients
-3. iOS app receives the message, calls `hub.releaseForDeploy()`: sends STOP_USER_PROGRAM (`0x00`) over BLE, then `cancelPeripheralConnection`. Sets `releasingForDeploy = true` so the normal reconnect loop does not fire.
-4. `pybricksdev` uploads new `main.py` to hub over BLE
-5. Xcode builds + installs new iOS app via `devicectl`
-6. New iOS app launches with fresh state (`releasingForDeploy = false`), reconnects to hub, auto-starts the program
+`deploy.sh` is fully automated and blocks until the system is confirmed ready. All steps emit `DEPLOY:component:event key=value` to stdout; the final line is `DEPLOY:success elapsed=Ns` or `DEPLOY:*:error reason=TOKEN hint=...`.
 
-If `server.py` is not running when `deploy.sh` runs, it will warn and the pybricksdev step will likely fail because the hub is still BLE-connected to iOS.
+1. **Server restart** — SIGTERM existing server via `.server.pid` (SIGKILL fallback after 5s), start fresh, poll control port 8766. Rotates `server.log` → `server.log.prev`. Detects zombie servers (port conflict with no PID file).
+2. **Wait for phone** — `wait_ready.py --phone` blocks until iOS reconnects to the new server (typically <2s).
+3. **iOS build** — `xcodebuild` compiles while hub remains BLE-connected to the old app.
+4. **Hub disconnect** — sends `hub_disconnect` to control port; iOS calls `releaseForDeploy()`, freeing BLE.
+5. **Hub upload** — `pybricksdev` flashes new `main.py` over BLE.
+6. **iOS install + launch** — `devicectl` installs and launches (~2s; hub is only idle for this window).
+7. **Wait for ready** — `wait_ready.py` blocks until both `phone_connected` and `hub_connected` confirmed.
+
+iOS build runs before hub upload intentionally: the hub auto-shuts-off after ~60–90s idle; building first means the hub is only idle for the 2s install+launch window.
+
+The post-commit hook dispatches deterministically by file path:
+- `server.py` only → `./deploy.sh --restart-server` (~2s)
+- `main.py` or `bricks/**` → `./deploy.sh` (full deploy, ~20s)
+- Everything else → silent exit
 
 ## Hub protocol
 
@@ -65,6 +78,14 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 **`releasingForDeploy` vs `releaseBLE()`**: Two separate methods on `HubConnectionManager`.
 - `releaseForDeploy()` — called by the `hub_disconnect` server command. Sends STOP_USER_PROGRAM (`.withResponse`), then cancels the BLE connection. Sets `releasingForDeploy = true` so `didDisconnectPeripheral` does not attempt to reconnect.
 - `releaseBLE()` — called ONLY on app terminate (`willTerminateNotification`). Sends STOP `.withoutResponse` (fire-and-forget into OS BT stack, survives process exit) then cancels the connection. Does NOT set `releasingForDeploy`. BLE stays alive while the app is backgrounded — `bluetooth-central` background mode handles that — so backgrounding does NOT call `releaseBLE()`.
+
+**Server lifecycle via PID file**: `server.py` writes `.server.pid` on startup and removes it in the `finally` block on SIGTERM. `deploy.sh` reads this to stop the server cleanly before restart. If the PID file is absent after the control port responds, a zombie server is holding the ports — `SERVER_PORT_CONFLICT` is emitted with an actionable hint. `server.log` rotates to `server.log.prev` on each restart so agents always read the current session.
+
+**iOS build before hub upload**: The hub auto-shuts-off after ~60–90s idle. Building the iOS app first (while the hub is still BLE-connected to the old app) means the hub is only idle for the ~2s install+launch window. The original order (hub upload → iOS build) risked hub shutdown during a long clean build.
+
+**Post-commit hook is deterministic**: File path → deploy target, no heuristics. `server.py` → `--restart-server`, `main.py`/`bricks/**` → full deploy, everything else → silent exit. Same commit always produces the same dispatch — agents can reason about it precisely.
+
+**`DEPLOY:` output format**: Every deploy step emits `DEPLOY:component:event key=value` to stdout. The final line is `DEPLOY:success elapsed=Ns` or `DEPLOY:*:error reason=TOKEN hint=...`. Error tokens are distinct and actionable: `CANNOT_CONNECT_WEBSOCKET` (check `server.log`), `TIMEOUT waiting=X` (named component didn't come up — check power/BLE), `SERVER_PORT_CONFLICT` (kill existing process on 8765/8766), `DEPLOY_ALREADY_RUNNING` (another deploy is in progress). Agents read these from `git commit` stdout.
 
 **iOS as BLE bridge**: Pybricks hubs only advertise BLE; an iPhone acts as an always-on relay to the IP network. The `bluetooth-central` background mode keeps the BLE connection alive even when the app is backgrounded — which is why the explicit release step is needed before pybricksdev can connect.
 
@@ -420,7 +441,8 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 ## Agent integration points
 
 - **Observe hub events**: Connect a WebSocket client to `ws://<server-ip>:8765/`
-- **Trigger deploy**: Run `./deploy.sh`
+- **Trigger deploy**: Commit to `main.py`, `server.py`, or `bricks/**` — the post-commit hook dispatches automatically and the system is ready when `git commit` returns. Read `DEPLOY:success` or `DEPLOY:*:error reason=TOKEN hint=...` from commit stdout.
+- **Check server health**: `server.log` = current session, `server.log.prev` = previous session (useful after a failed restart).
 - **Stop hub program only**: Send `hub_disconnect\n` to `localhost:8766`
 - **Agent contract**: See `examples/agent_template.py` — the living reference for hello check, register, subscribe, cleanup, reconnect.
 
@@ -429,7 +451,11 @@ Requires `server.py` running, hub connected via iOS app, iPhone attached. Runs s
 ```
 main.py                              Hub program (edit to change hub behavior)
 server.py                            WebSocket + control server
-deploy.sh                            Deploy pipeline
+deploy.sh                            Deploy pipeline (server + hub + iOS; called by post-commit hook)
+wait_ready.py                        Readiness gate — blocks until phone_connected + hub_connected
+hooks/
+  post-commit                        Auto-deploy on commit to main.py / server.py / bricks/**
+install_hooks.sh                     Symlinks hooks/ into .git/hooks/ — run once after clone
 pyproject.toml                       Python deps
 uv.lock                              Locked deps
 tests/
