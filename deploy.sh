@@ -11,7 +11,16 @@ SERVER_LOG="server.log"
 LOCK_FILE=".deploy-lock"
 CONTROL_PORT=8766
 
-log() { echo "DEPLOY:$*"; }
+speak() { osascript -e "say \"$*\" using \"Zarvox\"" & }
+
+log() {
+    echo "DEPLOY:$*"
+    if [[ "$*" == *":error"* ]]; then
+        local reason
+        reason=$(echo "$*" | grep -oE 'reason=[^ ]+' | sed 's/reason=//' | tr '_' ' ' | tr '[:upper:]' '[:lower:]')
+        speak "Deploy failed. ${reason:-check logs}"
+    fi
+}
 
 acquire_lock() {
     if [[ -f "$LOCK_FILE" ]]; then
@@ -172,6 +181,7 @@ if [[ "${1:-}" == "--restart-server" ]]; then
     acquire_lock
     server_restart
     uv run python wait_ready.py
+    speak "System ready"
     exit 0
 fi
 
@@ -179,6 +189,7 @@ if [[ "${1:-}" == "--hub" ]]; then
     acquire_lock
     hub_deploy
     uv run python wait_ready.py
+    speak "System ready"
     exit 0
 fi
 
@@ -187,6 +198,7 @@ if [[ "${1:-}" == "--ios" ]]; then
     ios_build
     ios_install_launch
     uv run python wait_ready.py
+    speak "System ready"
     exit 0
 fi
 
@@ -198,6 +210,7 @@ acquire_lock
 CHANGED="${DEPLOY_CHANGED:-all}"
 START_TS=$(date +%s)
 log "start changed=$CHANGED"
+speak "Deploying"
 
 server_restart
 uv run python wait_ready.py --phone  # iOS must be connected before hub_disconnect
@@ -208,3 +221,4 @@ uv run python wait_ready.py
 
 ELAPSED=$(( $(date +%s) - START_TS ))
 log "success elapsed=${ELAPSED}s"
+speak "System ready"
