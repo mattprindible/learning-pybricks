@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+import os
+import signal
 import socket
+from pathlib import Path
 
 import websockets
 from zeroconf.asyncio import AsyncZeroconf
@@ -9,6 +12,7 @@ from zeroconf import ServiceInfo
 
 PORT = 8765
 CONTROL_PORT = 8766
+PID_FILE = Path(".server.pid")
 SERVER_VERSION = 1
 SERVICE_TYPE = "_bricks._tcp.local."
 SERVICE_NAME = "bricks._bricks._tcp.local."
@@ -363,6 +367,14 @@ async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 async def main() -> None:
     hostname = socket.gethostname()
 
+    PID_FILE.write_text(str(os.getpid()))
+    log.info("PID %d written to %s", os.getpid(), PID_FILE)
+
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
     aiozc = AsyncZeroconf()
     info = ServiceInfo(
         SERVICE_TYPE,
@@ -381,8 +393,10 @@ async def main() -> None:
         await aiozc.async_register_service(info)
         log.info("Bonjour: %s on %s:%d", SERVICE_NAME, ip, PORT)
         try:
-            await asyncio.Future()
+            await shutdown_event.wait()
+            log.info("Shutting down...")
         finally:
+            PID_FILE.unlink(missing_ok=True)
             await aiozc.async_unregister_service(info)
             await aiozc.async_close()
 
