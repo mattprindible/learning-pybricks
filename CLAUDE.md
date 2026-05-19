@@ -160,7 +160,7 @@ camera (saliency) → {"type": "phone_hardware", "sensor": "camera", "mode": "sa
                       "salient_objects": [{"confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
                       "width": INT, "height": INT, "timestamp_ms": INT}
                      — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "saliency"}
-                     — Vision attention saliency; bboxes normalized 0–1, origin top-left
+                     — Vision attention saliency; bboxes normalized 0–1, top-left origin (y flipped from Vision's native bottom-left)
                      — ~3–7fps (Vision processing overhead); alwaysDiscardsLateVideoFrames=true drops extras
                      — salient_objects may be empty if nothing captures attention
 

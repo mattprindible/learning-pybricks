@@ -388,9 +388,10 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if let salientObjects = result.salientObjects {
             for obj in salientObjects {
                 let b = obj.boundingBox
+                // Vision uses bottom-left origin; convert to top-left for agent convenience
                 objects.append([
                     "confidence": obj.confidence,
-                    "bbox": ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+                    "bbox": ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
                 ])
             }
         }
@@ -416,19 +417,26 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
 
+        // All 19 COCO body keypoints available on VNHumanBodyPoseObservation (iOS 14+)
+        let allJointNames: [VNHumanBodyPoseObservation.JointName] = [
+            .nose, .leftEye, .rightEye, .leftEar, .rightEar,
+            .neck, .leftShoulder, .rightShoulder, .leftElbow, .rightElbow,
+            .leftWrist, .rightWrist, .root, .leftHip, .rightHip,
+            .leftKnee, .rightKnee, .leftAnkle, .rightAnkle,
+        ]
+
         var bodies: [[String: Any]] = []
         for obs in (request.results ?? []) {
             var joints: [String: Any] = [:]
-            if let recognized = try? obs.recognizedPoints(.all) {
-                for (key, point) in recognized {
-                    if point.confidence > 0 {
-                        joints[key.rawValue] = [
-                            "x": point.location.x,
-                            "y": point.location.y,
-                            "confidence": point.confidence,
-                        ]
-                    }
-                }
+            for jointName in allJointNames {
+                guard let point = try? obs.recognizedPoint(jointName), point.confidence > 0 else { continue }
+                // JointName.rawValue is VNRecognizedPointKey; .rawValue.rawValue reaches the String
+                // Vision uses bottom-left origin; convert to top-left for agent convenience
+                joints[jointName.rawValue.rawValue] = [
+                    "x": point.location.x,
+                    "y": 1 - point.location.y,
+                    "confidence": point.confidence,
+                ]
             }
             bodies.append(["joints": joints, "confidence": obs.confidence])
         }
@@ -464,10 +472,11 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         for obs in (request.results ?? []) {
             guard let top = obs.topCandidates(1).first else { continue }
             let b = obs.boundingBox
+            // Vision uses bottom-left origin; convert to top-left for agent convenience
             texts.append([
                 "text":       top.string,
                 "confidence": top.confidence,
-                "bbox":       ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+                "bbox":       ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
             ])
         }
 
@@ -495,10 +504,11 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         var animals: [[String: Any]] = []
         for obs in (request.results ?? []) {
             let b = obs.boundingBox
+            // Vision uses bottom-left origin; convert to top-left for agent convenience
             animals.append([
                 "labels":     obs.labels.map { ["identifier": $0.identifier, "confidence": $0.confidence] },
                 "confidence": obs.confidence,
-                "bbox":       ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+                "bbox":       ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
             ])
         }
 
