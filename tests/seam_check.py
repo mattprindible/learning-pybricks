@@ -406,6 +406,146 @@ async def contract_camera_not_cached():
         return failed("camera not cached", "timed out")
 
 
+async def _contract_camera_vision_mode(mode: str, payload_key: str, validate_item):
+    """Shared plumbing for Vision-mode camera contracts."""
+    try:
+        async with websockets.connect(WS_URL) as ws:
+            await asyncio.wait_for(ws.recv(), timeout=5)  # hello
+            await ws.send(json.dumps({"type": "subscribe", "sensor": "camera", "mode": mode}))
+
+            frame = None
+            deadline = asyncio.get_event_loop().time() + 15
+            while frame is None:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return failed(f"camera:{mode}", "timed out — is iOS app running with camera permission?")
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                if msg.get("type") == "phone_hardware" and msg.get("sensor") == "camera" and msg.get("mode") == mode:
+                    frame = msg
+
+            items = frame.get(payload_key)
+            if not isinstance(items, list):
+                return failed(f"camera:{mode}", f"{payload_key!r} missing or not a list: {items!r}")
+
+            for i, item in enumerate(items):
+                err = validate_item(item)
+                if err:
+                    return failed(f"camera:{mode}", f"{payload_key}[{i}]: {err}")
+
+            await ws.send(json.dumps({"type": "unsubscribe", "sensor": "camera"}))
+            return True  # caller prints the passed() line with mode-specific detail
+    except OSError as e:
+        return failed(f"camera:{mode}", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed(f"camera:{mode}", "timed out")
+
+
+def _bbox_ok(item) -> str | None:
+    bbox = item.get("bbox")
+    if not isinstance(bbox, dict):
+        return f"bbox missing or not dict: {bbox!r}"
+    for k in ("x", "y", "w", "h"):
+        if not isinstance(bbox.get(k), (int, float)):
+            return f"bbox.{k} missing or not numeric: {bbox.get(k)!r}"
+    return None
+
+
+async def contract_camera_saliency():
+    """
+    Vision mode (saliency): subscribing with mode='saliency' triggers
+    VNGenerateAttentionBasedSaliencyImageRequest per frame. Events carry
+    salient_objects — a list of {confidence, bbox} — in place of a raw JPEG.
+    Bounding boxes are normalized 0–1 with top-left origin.
+    """
+    def validate(item):
+        if not isinstance(item.get("confidence"), (int, float)):
+            return f"confidence not numeric: {item.get('confidence')!r}"
+        return _bbox_ok(item)
+
+    result = await _contract_camera_vision_mode("saliency", "salient_objects", validate)
+    if result is True:
+        return passed(
+            "Vision saliency: subscribe mode='saliency' → salient_objects [{confidence, bbox}] per frame (may be empty if nothing salient)",
+        )
+    return result
+
+
+async def contract_camera_animals():
+    """
+    Vision mode (animals): subscribing with mode='animals' triggers
+    VNRecognizeAnimalsRequest (iOS 13+). Events carry animals — a list of
+    {labels:[{identifier,confidence}], confidence, bbox} — one entry per
+    detected animal. Empty list when no animals are in frame.
+    """
+    def validate(item):
+        if not isinstance(item.get("labels"), list):
+            return f"labels not list: {item.get('labels')!r}"
+        for lbl in item["labels"]:
+            if not isinstance(lbl.get("identifier"), str):
+                return f"label.identifier not str: {lbl!r}"
+            if not isinstance(lbl.get("confidence"), (int, float)):
+                return f"label.confidence not numeric: {lbl!r}"
+        if not isinstance(item.get("confidence"), (int, float)):
+            return f"confidence not numeric: {item.get('confidence')!r}"
+        return _bbox_ok(item)
+
+    result = await _contract_camera_vision_mode("animals", "animals", validate)
+    if result is True:
+        return passed(
+            "Vision animals: subscribe mode='animals' → animals [{labels, confidence, bbox}] per frame (empty when no animals visible)",
+        )
+    return result
+
+
+async def contract_camera_text():
+    """
+    Vision mode (text): subscribing with mode='text' triggers VNRecognizeTextRequest
+    (.fast level). Events carry texts — a list of {text, confidence, bbox} — one
+    entry per recognized text region. Empty when no text is visible.
+    """
+    def validate(item):
+        if not isinstance(item.get("text"), str):
+            return f"text not str: {item.get('text')!r}"
+        if not isinstance(item.get("confidence"), (int, float)):
+            return f"confidence not numeric: {item.get('confidence')!r}"
+        return _bbox_ok(item)
+
+    result = await _contract_camera_vision_mode("text", "texts", validate)
+    if result is True:
+        return passed(
+            "Vision text: subscribe mode='text' → texts [{text, confidence, bbox}] per frame (empty when no text visible)",
+        )
+    return result
+
+
+async def contract_camera_pose():
+    """
+    Vision mode (pose): subscribing with mode='pose' triggers
+    VNDetectHumanBodyPoseRequest (iOS 14+). Events carry bodies — a list of
+    {joints:{name:{x,y,confidence}}, confidence} — one entry per detected person.
+    Only joints with confidence > 0 are included. Empty when no people are visible.
+    """
+    def validate(item):
+        if not isinstance(item.get("joints"), dict):
+            return f"joints not dict: {item.get('joints')!r}"
+        if not isinstance(item.get("confidence"), (int, float)):
+            return f"confidence not numeric: {item.get('confidence')!r}"
+        for name, joint in item["joints"].items():
+            if not isinstance(name, str):
+                return f"joint key not str: {name!r}"
+            for k in ("x", "y", "confidence"):
+                if not isinstance(joint.get(k), (int, float)):
+                    return f"joint {name!r}.{k} not numeric: {joint.get(k)!r}"
+        return None
+
+    result = await _contract_camera_vision_mode("pose", "bodies", validate)
+    if result is True:
+        return passed(
+            "Vision pose: subscribe mode='pose' → bodies [{joints:{name:{x,y,confidence}}, confidence}] (empty when no people visible)",
+        )
+    return result
+
+
 # ── Event ─────────────────────────────────────────────────────────────────────
 
 async def contract_connectivity_event_broadcast():
@@ -640,6 +780,10 @@ async def main():
 
     results.append(await contract_camera_stream())
     results.append(await contract_camera_not_cached())
+    results.append(await contract_camera_saliency())
+    results.append(await contract_camera_animals())
+    results.append(await contract_camera_text())
+    results.append(await contract_camera_pose())
 
     section("Event")
     results.append(await contract_connectivity_event_broadcast())
