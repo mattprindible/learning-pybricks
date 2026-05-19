@@ -96,12 +96,12 @@ except Exception as e:
 }
 
 # ---------------------------------------------------------------------------
-# ios_deploy — build, install, and launch the iOS app.
+# ios_build — compile only; safe to run while hub is still BLE-connected.
 # ---------------------------------------------------------------------------
-ios_deploy() {
+ios_build() {
     local start_ts elapsed
-
     start_ts=$(date +%s)
+
     log "ios:build"
     if ! xcodebuild \
         -project "$PROJECT" \
@@ -113,8 +113,17 @@ ios_deploy() {
         log "ios:error reason=XCODEBUILD_FAILED"
         exit 1
     fi
+
     elapsed=$(( $(date +%s) - start_ts ))
     log "ios:build:ok elapsed=${elapsed}s"
+}
+
+# ---------------------------------------------------------------------------
+# ios_install_launch — install and launch the pre-built app.
+# ---------------------------------------------------------------------------
+ios_install_launch() {
+    local start_ts elapsed
+    start_ts=$(date +%s)
 
     log "ios:install"
     if ! xcrun devicectl device install app --device "$DEVICE" "$APP" \
@@ -151,13 +160,15 @@ if [[ "${1:-}" == "--hub" ]]; then
 fi
 
 if [[ "${1:-}" == "--ios" ]]; then
-    ios_deploy
+    ios_build
+    ios_install_launch
     uv run python wait_ready.py
     exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# Full deploy
+# Full deploy — build iOS first (hub BLE still held), then hub upload,
+# then install+launch (hub idle only for the short ~5s install window).
 # ---------------------------------------------------------------------------
 CHANGED="${DEPLOY_CHANGED:-all}"
 START_TS=$(date +%s)
@@ -165,8 +176,9 @@ log "start changed=$CHANGED"
 
 server_restart
 uv run python wait_ready.py --phone  # iOS must be connected before hub_disconnect
-hub_deploy
-ios_deploy
+ios_build                            # slow step; hub still BLE-connected to old app
+hub_deploy                           # hub idle window starts here
+ios_install_launch                   # ~5s — well within hub auto-shutoff threshold
 uv run python wait_ready.py
 
 ELAPSED=$(( $(date +%s) - START_TS ))
