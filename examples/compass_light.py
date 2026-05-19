@@ -94,6 +94,7 @@ async def session(ws: websockets.ClientConnection) -> None:
     print("Rotate the phone — hub light follows compass heading. Ctrl-C to exit.\n")
 
     hub_live = True
+    current_color = None  # only send when color sector changes
     try:
         async for raw in ws:
             msg = json.loads(raw)
@@ -105,6 +106,7 @@ async def session(ws: websockets.ClientConnection) -> None:
 
             if msg.get("type") == "hub_connected":
                 hub_live = True
+                current_color = None  # hub restarted, re-apply on next update
                 print("Hub reconnected — resuming")
                 continue
 
@@ -121,7 +123,9 @@ async def session(ws: websockets.ClientConnection) -> None:
                 accuracy = msg.get("accuracy", -1)
                 color = heading_to_color(heading)
                 print(f"  {heading:6.1f}° {label}  ±{accuracy:.1f}°  → {color}")
-                await ws.send(json.dumps({"target": "hub", "data": f"hub:light:on:{color}"}))
+                if color != current_color:
+                    await ws.send(json.dumps({"target": "hub", "data": f"hub:light:on:{color}"}))
+                    current_color = color
 
             elif sensor == "altimeter":
                 altitude = msg.get("altitude", 0.0)
