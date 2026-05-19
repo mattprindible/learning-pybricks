@@ -179,6 +179,7 @@ ios_install_launch() {
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--restart-server" ]]; then
     acquire_lock
+    speak "${DEPLOY_MESSAGE:-Restarting server}"
     server_restart
     uv run python wait_ready.py
     speak "System ready"
@@ -210,7 +211,7 @@ acquire_lock
 CHANGED="${DEPLOY_CHANGED:-all}"
 START_TS=$(date +%s)
 log "start changed=$CHANGED"
-speak "Deploying"
+speak "${DEPLOY_MESSAGE:-Deploying}"
 
 server_restart
 uv run python wait_ready.py --phone  # iOS must be connected before hub_disconnect

@@ -27,6 +27,10 @@ $NEEDS_SERVER || $NEEDS_FULL || exit 0
 export DEPLOY_CHANGED
 DEPLOY_CHANGED=$(echo "$CHANGED" | grep -E '^(server\.py|main\.py|bricks/)' | tr '\n' ' ' | sed 's/ $//')
 
+# Speak the commit subject so the intent is audible as the deploy starts
+export DEPLOY_MESSAGE
+DEPLOY_MESSAGE=$(git log -1 --format=%s | sed "s/\"/'/g")
+
 if $NEEDS_FULL; then
     exec ./deploy.sh
 else
