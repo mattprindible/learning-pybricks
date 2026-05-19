@@ -354,7 +354,8 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             runSaliency(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         case "animals":
             runAnimals(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
-        // case "text":     ...  (Commit 4)
+        case "text":
+            runText(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         // case "pose":     ...  (Commit 5)
         default:
             guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
@@ -401,6 +402,38 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             "width":           width,
             "height":          height,
             "timestamp_ms":    timestampMs,
+        ])
+    }
+
+    private func runText(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .fast
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return
+        }
+
+        var texts: [[String: Any]] = []
+        for obs in (request.results ?? []) {
+            guard let top = obs.topCandidates(1).first else { continue }
+            let b = obs.boundingBox
+            texts.append([
+                "text":       top.string,
+                "confidence": top.confidence,
+                "bbox":       ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+            ])
+        }
+
+        events.send([
+            "type":         "phone_hardware",
+            "sensor":       "camera",
+            "mode":         "text",
+            "texts":        texts,
+            "width":        width,
+            "height":       height,
+            "timestamp_ms": timestampMs,
         ])
     }
 

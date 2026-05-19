@@ -171,6 +171,13 @@ camera (animals)  → {"type": "phone_hardware", "sensor": "camera", "mode": "an
                      — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "animals"}
                      — Vision animal recognition (iOS 13+); labels list ranked by confidence
                      — animals may be empty if no animals detected; requires iOS 13+
+
+camera (text)     → {"type": "phone_hardware", "sensor": "camera", "mode": "text",
+                      "texts": [{"text": STR, "confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "text"}
+                     — Vision fast text recognition; texts may be empty if no text visible
+                     — uses .fast recognition level (lower latency, lower accuracy than .accurate)
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):
