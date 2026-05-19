@@ -20,6 +20,7 @@ Error tokens and what to do with them:
 
 import asyncio
 import json
+import subprocess
 import sys
 import time
 
@@ -32,6 +33,10 @@ timeout_args = [a for a in args if a.lstrip("-").isdigit()]
 TIMEOUT = int(timeout_args[0]) if timeout_args else 30
 
 
+def speak(text: str) -> None:
+    subprocess.Popen(["osascript", "-e", f'say "{text}" using "Zarvox"'])
+
+
 def missing_list(phone_ok: bool, hub_ok: bool) -> str:
     m = []
     if want_phone and not phone_ok:
@@ -39,6 +44,10 @@ def missing_list(phone_ok: bool, hub_ok: bool) -> str:
     if want_hub and not hub_ok:
         m.append("hub_connected")
     return ",".join(m)
+
+
+def humanize(token: str) -> str:
+    return token.replace("_", " ").lower()
 
 
 async def wait() -> None:
@@ -54,6 +63,7 @@ async def wait() -> None:
         if elapsed >= TIMEOUT:
             print(f"DEPLOY:ready:error reason=CANNOT_CONNECT_WEBSOCKET"
                   f" elapsed={int(elapsed)}s hint=check_server.log")
+            speak("Deploy failed. cannot connect to server")
             sys.exit(1)
 
         try:
@@ -62,9 +72,11 @@ async def wait() -> None:
                     elapsed = time.monotonic() - start
                     remaining = TIMEOUT - elapsed
                     if remaining <= 0:
+                        missing = missing_list(phone_ok, hub_ok)
                         print(f"DEPLOY:ready:error reason=TIMEOUT"
-                              f" waiting={missing_list(phone_ok, hub_ok)}"
+                              f" waiting={missing}"
                               f" elapsed={int(elapsed)}s")
+                        speak(f"Deploy failed. timeout waiting for {humanize(missing)}")
                         sys.exit(1)
 
                     try:
@@ -103,8 +115,8 @@ async def wait() -> None:
             if elapsed >= TIMEOUT:
                 print(f"DEPLOY:ready:error reason=CANNOT_CONNECT_WEBSOCKET"
                       f" elapsed={int(elapsed)}s hint=check_server.log")
+                speak("Deploy failed. cannot connect to server")
                 sys.exit(1)
-            # Server not up yet — retry after brief wait
             await asyncio.sleep(0.5)
 
 
