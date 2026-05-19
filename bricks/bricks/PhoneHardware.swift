@@ -13,6 +13,7 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let altimeter = CMAltimeter()
     private let activityManager = CMMotionActivityManager()
     private var captureSession: AVCaptureSession?
+    private var cameraMode: String = "raw"
     private let cameraQueue = DispatchQueue(label: "com.bricks.camera", qos: .userInitiated)
     private lazy var locationManager: CLLocationManager = {
         let m = CLLocationManager()
@@ -131,7 +132,7 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         switch (action, sensor) {
         case ("start", "imu"):      startIMU(interval: interval)
         case ("stop",  "imu"):      stopIMU()
-        case ("start", "camera"):   startCamera()
+        case ("start", "camera"):   startCamera(mode: command["mode"] as? String ?? "raw")
         case ("stop",  "camera"):   stopCamera()
         case ("start", "location"):        startLocation()
         case ("stop",  "location"):        stopLocation()
@@ -273,7 +274,10 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Camera
 
-    private func startCamera() {
+    private func startCamera(mode: String = "raw") {
+        if captureSession != nil && mode == cameraMode { return }
+        if captureSession != nil { stopCamera() }
+        cameraMode = mode
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard granted, let self else { return }
             self.cameraQueue.async { self._startCaptureSession() }
@@ -341,16 +345,27 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                   bitmapInfo: bitmapInfo.rawValue),
               let cgImage = ctx.makeImage() else { return }
 
-        guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
         let timestampMs = Int64(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds * 1000)
-        events.send([
-            "type":         "phone_hardware",
-            "sensor":       "camera",
-            "frame":        jpegData.base64EncodedString(),
-            "width":        width,
-            "height":       height,
-            "timestamp_ms": timestampMs,
-        ])
+        let mode = cameraMode
+
+        // Vision processing modes are dispatched here; all currently fall through to raw JPEG
+        switch mode {
+        // case "saliency": ...  (Commit 2)
+        // case "animals":  ...  (Commit 3)
+        // case "text":     ...  (Commit 4)
+        // case "pose":     ...  (Commit 5)
+        default:
+            guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
+            events.send([
+                "type":         "phone_hardware",
+                "sensor":       "camera",
+                "mode":         mode,
+                "frame":        jpegData.base64EncodedString(),
+                "width":        width,
+                "height":       height,
+                "timestamp_ms": timestampMs,
+            ])
+        }
     }
 
     // MARK: - Battery

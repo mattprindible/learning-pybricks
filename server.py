@@ -86,6 +86,8 @@ connected_clients: set[Client] = set()
 subscribers: dict[str, set[Client]] = {}
 # active stream interval (ms) per sensor; tracks the fastest rate any subscriber has requested
 stream_intervals: dict[str, int] = {}
+# extra options forwarded to the phone for each sensor (e.g. {"mode": "saliency"}); last-writer-wins
+stream_options: dict[str, dict] = {}
 
 
 async def _phone_command(command: dict) -> None:
@@ -106,7 +108,9 @@ async def _recover_phone_subscriptions() -> None:
     for sensor in list(subscribers):
         if not sensor.startswith("hub:"):
             interval = stream_intervals.get(sensor, 100)
-            await _phone_command({"action": "start", "sensor": sensor, "interval": interval})
+            cmd: dict = {"action": "start", "sensor": sensor, "interval": interval}
+            cmd.update(stream_options.get(sensor, {}))
+            await _phone_command(cmd)
             log.info("Recovered phone stream subscription: %s at %dms", sensor, interval)
 
 
@@ -116,21 +120,33 @@ async def _hub_command(command: str) -> None:
         c.send(msg)
 
 
-async def _subscribe(client: Client, sensor: str, interval: int = 100) -> None:
+async def _subscribe(client: Client, sensor: str, interval: int = 100, options: dict | None = None) -> None:
     first = sensor not in subscribers
     subscribers.setdefault(sensor, set()).add(client)
     if first:
         stream_intervals[sensor] = interval
+        if options:
+            stream_options[sensor] = options
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:start:{sensor[4:]}:{interval}")
         else:
-            await _phone_command({"action": "start", "sensor": sensor, "interval": interval})
+            cmd: dict = {"action": "start", "sensor": sensor, "interval": interval}
+            cmd.update(options or {})
+            await _phone_command(cmd)
         log.info("Started %s stream at %dms (first subscriber: %s)", sensor, interval, client.label())
     elif sensor.startswith("hub:") and interval < stream_intervals.get(sensor, interval):
         stream_intervals[sensor] = interval
         await _hub_command(f"hub:stream:stop:{sensor[4:]}")
         await _hub_command(f"hub:stream:start:{sensor[4:]}:{interval}")
         log.info("Restarted %s stream at %dms (faster request from %s)", sensor, interval, client.label())
+    elif not sensor.startswith("hub:") and options and options != stream_options.get(sensor):
+        # Last-writer-wins: new subscriber wants different options — update and re-send phone command
+        log.warning("Sensor %s options conflict: %s requests %s (was %s)",
+                    sensor, client.label(), options, stream_options.get(sensor, {}))
+        stream_options[sensor] = options
+        cmd = {"action": "start", "sensor": sensor, "interval": stream_intervals.get(sensor, interval)}
+        cmd.update(options)
+        await _phone_command(cmd)
 
 
 async def _unsubscribe(client: Client, sensor: str) -> None:
@@ -141,6 +157,7 @@ async def _unsubscribe(client: Client, sensor: str) -> None:
     if not subs:
         del subscribers[sensor]
         stream_intervals.pop(sensor, None)
+        stream_options.pop(sensor, None)
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:stop:{sensor[4:]}")
         else:
@@ -239,7 +256,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 sensor = msg.get("sensor", "")
                 interval = max(10, int(msg.get("interval", 100)))
                 if sensor:
-                    await _subscribe(client, sensor, interval)
+                    options = {k: v for k, v in msg.items() if k not in ("type", "sensor", "interval")}
+                    await _subscribe(client, sensor, interval, options or None)
                 continue
 
             if msg.get("type") == "unsubscribe":

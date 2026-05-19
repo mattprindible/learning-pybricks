@@ -96,9 +96,11 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 Subscribe to phone sensors the same way as hub streams: `{"type": "subscribe", "sensor": "SENSOR", "interval": MS}`. The server sends `{"target": "phone", "command": {"action": "start", "sensor": "SENSOR", "interval": MS}}` to the iOS bridge. The bridge emits `phone_hardware` events routed to subscribers.
 
+**Subscribe options forwarding**: Any field in a `subscribe` message beyond `type`, `sensor`, and `interval` is forwarded verbatim in the phone command dict. This lets sensors expose extra configuration (e.g. `mode`) without server changes. Example: `{"type": "subscribe", "sensor": "camera", "mode": "saliency"}` → phone receives `{"action": "start", "sensor": "camera", "interval": 100, "mode": "saliency"}`. **Last-writer-wins policy**: if two agents subscribe to the same phone sensor with conflicting options, the most recent subscribe wins and the server re-sends the phone command. The server logs a warning. Document your mode choices in agent headers to avoid silent conflicts.
+
 **Phone→server command format** (JSON dict, not colon-delimited — no BLE constraint):
 ```json
-{"target": "phone", "command": {"action": "start"|"stop", "sensor": "NAME", "interval": MS}}
+{"target": "phone", "command": {"action": "start"|"stop", "sensor": "NAME", "interval": MS, ...options}}
 ```
 
 **Available sensors and their event schemas:**
@@ -149,10 +151,14 @@ motion_activity  →  {"type": "phone_hardware", "sensor": "motion_activity",
                      — requires NSMotionUsageDescription permission
 
 camera           →  {"type": "phone_hardware", "sensor": "camera",
-                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)
+                      "mode": STR,                 ("raw" or Vision mode name)
+                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)  [raw mode]
                       "width": INT, "height": INT,
                       "timestamp_ms": INT}
-                     — never cached (STREAM_ONLY_SENSORS); interval ignored (hardware-capped at 10 fps)
+                     — never cached (STREAM_ONLY_SENSORS); interval ignored (hardware-capped at ~10fps raw)
+                     — Vision modes cap at ~3–7fps (processing overhead)
+                     — subscribe with {"type": "subscribe", "sensor": "camera", "mode": "raw"|"saliency"|...}
+                     — available modes declared in manifest vision_capabilities; default mode is "raw"
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):
