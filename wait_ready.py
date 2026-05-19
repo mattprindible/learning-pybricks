@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Block until both phone_connected and hub_connected.
+Block until the requested components are confirmed connected.
 
-Checks the hello message first (server sends current state on connect),
-then listens for live events to cover the case where one or both aren't
-ready yet. Called by deploy.sh as the final readiness gate.
+Usage:
+  wait_ready.py [timeout] [--phone] [--hub]
 
-Exit 0: system ready.
-Exit 1: timeout — prints DEPLOY:ready:error reason=... to stdout.
+  --phone   wait for phone_connected only
+  --hub     wait for hub_connected only
+  (neither) wait for both (default)
+
+Exit 0: ready. Exit 1: timeout — prints DEPLOY:ready:error to stdout.
 """
 
 import asyncio
@@ -16,14 +18,19 @@ import sys
 import time
 
 WS_URL = "ws://localhost:8765/"
-TIMEOUT = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+
+args = sys.argv[1:]
+want_phone = "--phone" in args or "--phone" not in args and "--hub" not in args
+want_hub   = "--hub"   in args or "--phone" not in args and "--hub" not in args
+timeout_args = [a for a in args if a.lstrip("-").isdigit()]
+TIMEOUT = int(timeout_args[0]) if timeout_args else 30
 
 
 async def wait() -> None:
     import websockets
 
-    phone_ok = False
-    hub_ok = False
+    phone_ok = not want_phone
+    hub_ok   = not want_hub
     start = time.monotonic()
 
     async with websockets.connect(WS_URL) as ws:
@@ -32,9 +39,9 @@ async def wait() -> None:
             remaining = TIMEOUT - elapsed
             if remaining <= 0:
                 missing = []
-                if not phone_ok:
+                if want_phone and not phone_ok:
                     missing.append("phone_connected")
-                if not hub_ok:
+                if want_hub and not hub_ok:
                     missing.append("hub_connected")
                 print(f"DEPLOY:ready:error reason=TIMEOUT waiting={','.join(missing)} elapsed={int(elapsed)}s")
                 sys.exit(1)
@@ -51,8 +58,10 @@ async def wait() -> None:
 
             t = msg.get("type")
             if t == "hello":
-                phone_ok = msg.get("phone_connected", False)
-                hub_ok = msg.get("hub_connected", False)
+                if want_phone:
+                    phone_ok = msg.get("phone_connected", False)
+                if want_hub:
+                    hub_ok = msg.get("hub_connected", False)
             elif t == "phone_connected":
                 phone_ok = True
             elif t == "hub_connected":
@@ -60,7 +69,12 @@ async def wait() -> None:
 
             if phone_ok and hub_ok:
                 elapsed = time.monotonic() - start
-                print(f"DEPLOY:ready:ok phone_connected=true hub_connected=true elapsed={int(elapsed)}s")
+                waiting = []
+                if want_phone:
+                    waiting.append("phone_connected=true")
+                if want_hub:
+                    waiting.append("hub_connected=true")
+                print(f"DEPLOY:ready:ok {' '.join(waiting)} elapsed={int(elapsed)}s")
                 return
 
 

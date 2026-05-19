@@ -164,6 +164,7 @@ START_TS=$(date +%s)
 log "start changed=$CHANGED"
 
 server_restart
+uv run python wait_ready.py --phone  # iOS must be connected before hub_disconnect
 hub_deploy
 ios_deploy
 uv run python wait_ready.py
