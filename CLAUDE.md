@@ -54,7 +54,7 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 
 **`hub_connected` is tied to `>ready`**, not BLE connection — because the dispatch loop isn't accepting commands until `main.py` finishes startup. On hub reconnect, server calls `_recover_subscriptions()` to re-send active stream subscriptions.
 
-**Open phone sensor key**: Any `sensor` value works in `phone_hardware` messages. Add a new sensor to `PhoneHardwareManager.handleCommand()` and call `events.send(...)` with `type: "phone_hardware"` and a `sensor` key — no server changes needed. For high-frequency sensors that should never be cached as stale snapshots (like camera), add the name to `STREAM_ONLY_SENSORS` in `server.py`.
+**Open phone sensor key**: Any `sensor` value works in `phone_hardware` messages. Add a new `("start"|"stop", "sensor_name")` case to `PhoneHardwareManager.handleCommand()` and emit `phone_hardware` events with a `sensor` key — no server changes needed. Phone commands are JSON dicts (not colon-delimited) because they go WebSocket→WebSocket and have no BLE constraint. For high-frequency sensors that should never be cached as stale snapshots (like camera), add the name to `STREAM_ONLY_SENSORS` in `server.py`.
 
 **Phone→hub composition**: `server.py` reacts to `phone_hardware` events and can emit hub commands in response — see `examples/battery_light.py` for a working example.
 
@@ -91,6 +91,140 @@ Pybricks BLE command/event characteristic (`c5f50002-...`):
 **Safe state on agent exit**: Each agent is responsible for stopping its own hardware in a `finally` block. The server does not intervene — it can't know which motors belong to which agent, and a blanket stop would silently interrupt other agents running concurrently. Example: `await ws.send(json.dumps({"target": "hub", "data": "exec:[m.stop() for m in motors.values()]"}))`
 
 **`exec()` works in Pybricks MicroPython**: `exec(code, globals())` executes arbitrary Python with full access to the hub's runtime globals. This makes `main.py` a live REPL over WebSocket — new hub behaviours can be sent as code strings without redeploying. Discovered empirically 2026-05-09.
+
+## Phone sensor protocol
+
+Subscribe to phone sensors the same way as hub streams: `{"type": "subscribe", "sensor": "SENSOR", "interval": MS}`. The server sends `{"target": "phone", "command": {"action": "start", "sensor": "SENSOR", "interval": MS}}` to the iOS bridge. The bridge emits `phone_hardware` events routed to subscribers.
+
+**Subscribe options forwarding**: Any field in a `subscribe` message beyond `type`, `sensor`, and `interval` is forwarded verbatim in the phone command dict. This lets sensors expose extra configuration (e.g. `mode`) without server changes. Example: `{"type": "subscribe", "sensor": "camera", "mode": "saliency"}` → phone receives `{"action": "start", "sensor": "camera", "interval": 100, "mode": "saliency"}`. **Last-writer-wins policy**: if two agents subscribe to the same phone sensor with conflicting options, the most recent subscribe wins and the server re-sends the phone command. The server logs a warning. Document your mode choices in agent headers to avoid silent conflicts.
+
+**Phone→server command format** (JSON dict, not colon-delimited — no BLE constraint):
+```json
+{"target": "phone", "command": {"action": "start"|"stop", "sensor": "NAME", "interval": MS, ...options}}
+```
+
+**Available sensors and their event schemas:**
+
+```
+battery          →  {"type": "phone_hardware", "sensor": "battery",
+                      "level": FLOAT (0–1), "state": "charging"|"full"|"unplugged"|"unknown"}
+                     — event-driven (fires on change, not polled); interval ignored
+
+imu              →  {"type": "phone_hardware", "sensor": "imu",
+                      "accel":    {"x": F, "y": F, "z": F},   (g; gravity-subtracted user acceleration)
+                      "gyro":     {"x": F, "y": F, "z": F},   (rad/s)
+                      "attitude": {"roll": F, "pitch": F, "yaw": F}}  (rad)
+                     — rate controlled by interval (ms → deviceMotionUpdateInterval)
+
+location         →  {"type": "phone_hardware", "sensor": "location",
+                      "lat": F, "lon": F,          (degrees; WGS84)
+                      "altitude": F,               (meters above sea level)
+                      "speed": F,                  (m/s; -1 if unavailable)
+                      "course": F,                 (degrees from true north; -1 if unavailable)
+                      "h_accuracy": F,             (meters)
+                      "v_accuracy": F,             (meters)
+                      "timestamp_ms": INT}
+                     — rate set by CoreLocation (hardware-driven, ~1 Hz outdoors); interval ignored
+                     — requires NSLocationWhenInUseUsageDescription permission
+
+heading          →  {"type": "phone_hardware", "sensor": "heading",
+                      "magnetic_heading": F,       (degrees; 0 = magnetic north)
+                      "true_heading": F,           (degrees; 0 = true north; -1 if unavailable)
+                      "accuracy": F,               (degrees; -1 if uncalibrated)
+                      "x": F, "y": F, "z": F,      (µT; raw magnetometer)
+                      "timestamp_ms": INT}
+                     — shares CLLocationManager with location; both can run simultaneously
+                     — only available on devices with a magnetometer (check manifest hardware.compass)
+
+altimeter        →  {"type": "phone_hardware", "sensor": "altimeter",
+                      "altitude": F,               (meters; relative to session start, not sea level)
+                      "pressure": F,               (kPa)
+                      "timestamp_ms": INT}
+                     — hardware-driven (~1 Hz); interval ignored
+                     — only available on devices with a barometer (check manifest hardware.barometer)
+
+motion_activity  →  {"type": "phone_hardware", "sensor": "motion_activity",
+                      "activity":   "stationary"|"walking"|"running"|"cycling"|"automotive"|"unknown",
+                      "confidence": "low"|"medium"|"high",
+                      "timestamp_ms": INT}
+                     — fires on transition, not on a fixed interval; interval ignored
+                     — requires NSMotionUsageDescription permission
+
+camera (raw)     →  {"type": "phone_hardware", "sensor": "camera", "mode": "raw",
+                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera"}  (mode defaults to "raw")
+                     — never cached (STREAM_ONLY_SENSORS); hardware-capped at ~10fps
+
+camera (saliency) → {"type": "phone_hardware", "sensor": "camera", "mode": "saliency",
+                      "salient_objects": [{"confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "saliency"}
+                     — Vision attention saliency; bboxes normalized 0–1, top-left origin (y flipped from Vision's native bottom-left)
+                     — ~3–7fps (Vision processing overhead); alwaysDiscardsLateVideoFrames=true drops extras
+                     — salient_objects may be empty if nothing captures attention
+
+camera (animals)  → {"type": "phone_hardware", "sensor": "camera", "mode": "animals",
+                      "animals": [{"labels": [{"identifier": "Cat", "confidence": F}, ...],
+                                   "confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "animals"}
+                     — Vision animal recognition (iOS 13+); labels list ranked by confidence
+                     — animals may be empty if no animals detected; requires iOS 13+
+
+camera (text)     → {"type": "phone_hardware", "sensor": "camera", "mode": "text",
+                      "texts": [{"text": STR, "confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "text"}
+                     — Vision fast text recognition; texts may be empty if no text visible
+                     — uses .fast recognition level (lower latency, lower accuracy than .accurate)
+
+camera (pose)     → {"type": "phone_hardware", "sensor": "camera", "mode": "pose",
+                      "bodies": [{"joints": {"left_shoulder": {"x": F, "y": F, "confidence": F}, ...},
+                                  "confidence": F}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "pose"}
+                     — Vision human body pose (iOS 14+); joints use Vision joint name keys (VNHumanBodyPoseObservation.JointName.rawValue)
+                     — only joints with confidence > 0 are included; bodies may be empty; requires iOS 14+
+
+camera (hand_pose) → {"type": "phone_hardware", "sensor": "camera", "mode": "hand_pose",
+                      "hands": [{"joints": {"wrist": {"x": F, "y": F, "confidence": F},
+                                            "indexTip": {...}, ...},
+                                  "chirality": "left"|"right"|"unknown",
+                                  "confidence": F}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "hand_pose"}
+                     — Vision hand pose (iOS 14+); up to 2 hands (maximumHandCount=2)
+                     — 21 joints per hand: wrist + 4 joints per finger (tip/DIP/PIP/MCP) + 4 thumb joints (tip/IP/MP/CMC)
+                     — chirality identifies left vs right hand; only joints with confidence > 0 included
+                     — hands may be empty when no hands visible; requires iOS 14+
+```
+
+**phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):
+```json
+{
+  "type":   "phone_connected",
+  "device": "iPhone15,2",
+  "os":     "iOS 17.4",
+  "hardware": {
+    "gps": true, "compass": true, "barometer": true,
+    "motion": true, "pedometer": true,
+    "cameras": ["back_wide", "back_ultrawide", "back_tele", "front_truedepth"]
+  },
+  "vision_capabilities": ["saliency", "text", "rectangles", "animals", "pose", "hand_pose"],
+  "permissions": {
+    "location": "authorized"|"denied"|"not_determined",
+    "camera":   "authorized"|"denied"|"not_determined",
+    "microphone": "authorized"|"denied"|"not_determined",
+    "motion":   "authorized"|"denied"|"not_determined"
+  },
+  "battery": {"level": 0.87, "state": "charging"}
+}
+```
+
+**Adding a new phone sensor**: add a `("start"|"stop", "sensor_name")` case to `handleCommand` in `PhoneHardware.swift` and emit `phone_hardware` events. No server changes needed. For sensors that should never be cached as snapshots (high-frequency, always-stale data), add to `STREAM_ONLY_SENSORS` in `server.py`.
+
+**Adding a new Vision camera mode**: add a `case "mode_name":` branch to the `switch mode` in `captureOutput` in `PhoneHardware.swift`, implement a `private func runModeName(cgImage:width:height:timestampMs:)` method using the appropriate `VNRequest` subclass, and emit a `phone_hardware` event with `"mode": "mode_name"` and your payload key. Bounding boxes and joint positions should be flipped to top-left origin (`y = 1 - vision_y` for points, `y = 1 - b.maxY` for boxes). No server changes needed — the mode is forwarded via subscribe options.
 
 ## Hub command protocol
 
@@ -307,10 +441,12 @@ examples/
   agent_template.py                  Demonstrates all 7 agent contract points
   tilt_drive.py                      iPhone tilt → motor speed control script
   battery_light.py                   iPhone battery state → hub light color
+  compass_light.py                   Phone heading → hub status light color (manifest-first pattern)
   control.py                         Basic hub control example
   control_exec.py                    Exec-based control example
   diagnose.py                        Hardware diagnostic script
   proximity_light.py                 Camera JPEG size → hub light proximity indicator
+  vision_demo.py                     Live Vision framework output — run with --mode saliency|animals|text|pose|hand_pose
 scratch/
   explore_*.py                       Exploratory one-off scripts (not tests)
 bricks/bricks/

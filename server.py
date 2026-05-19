@@ -42,6 +42,7 @@ hub_connected: bool = False
 phone_connected: bool = False
 bridge_client = None  # the Client that is the iOS bridge
 hub_battery_cache: str | None = None  # last hub_battery payload; replayed to new clients
+phone_manifest_cache: str | None = None  # last phone_connected manifest; replayed to new clients
 
 
 class Client:
@@ -85,9 +86,11 @@ connected_clients: set[Client] = set()
 subscribers: dict[str, set[Client]] = {}
 # active stream interval (ms) per sensor; tracks the fastest rate any subscriber has requested
 stream_intervals: dict[str, int] = {}
+# extra options forwarded to the phone for each sensor (e.g. {"mode": "saliency"}); last-writer-wins
+stream_options: dict[str, dict] = {}
 
 
-async def _phone_command(command: str) -> None:
+async def _phone_command(command: dict) -> None:
     msg = json.dumps({"target": "phone", "command": command})
     for c in connected_clients.copy():
         c.send(msg)
@@ -104,8 +107,11 @@ async def _recover_subscriptions() -> None:
 async def _recover_phone_subscriptions() -> None:
     for sensor in list(subscribers):
         if not sensor.startswith("hub:"):
-            await _phone_command(f"start_{sensor}")
-            log.info("Recovered phone stream subscription: %s", sensor)
+            interval = stream_intervals.get(sensor, 100)
+            cmd: dict = {"action": "start", "sensor": sensor, "interval": interval}
+            cmd.update(stream_options.get(sensor, {}))
+            await _phone_command(cmd)
+            log.info("Recovered phone stream subscription: %s at %dms", sensor, interval)
 
 
 async def _hub_command(command: str) -> None:
@@ -114,21 +120,33 @@ async def _hub_command(command: str) -> None:
         c.send(msg)
 
 
-async def _subscribe(client: Client, sensor: str, interval: int = 100) -> None:
+async def _subscribe(client: Client, sensor: str, interval: int = 100, options: dict | None = None) -> None:
     first = sensor not in subscribers
     subscribers.setdefault(sensor, set()).add(client)
     if first:
         stream_intervals[sensor] = interval
+        if options:
+            stream_options[sensor] = options
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:start:{sensor[4:]}:{interval}")
         else:
-            await _phone_command(f"start_{sensor}")
+            cmd: dict = {"action": "start", "sensor": sensor, "interval": interval}
+            cmd.update(options or {})
+            await _phone_command(cmd)
         log.info("Started %s stream at %dms (first subscriber: %s)", sensor, interval, client.label())
     elif sensor.startswith("hub:") and interval < stream_intervals.get(sensor, interval):
         stream_intervals[sensor] = interval
         await _hub_command(f"hub:stream:stop:{sensor[4:]}")
         await _hub_command(f"hub:stream:start:{sensor[4:]}:{interval}")
         log.info("Restarted %s stream at %dms (faster request from %s)", sensor, interval, client.label())
+    elif not sensor.startswith("hub:") and options and options != stream_options.get(sensor):
+        # Last-writer-wins: new subscriber wants different options — update and re-send phone command
+        log.warning("Sensor %s options conflict: %s requests %s (was %s)",
+                    sensor, client.label(), options, stream_options.get(sensor, {}))
+        stream_options[sensor] = options
+        cmd = {"action": "start", "sensor": sensor, "interval": stream_intervals.get(sensor, interval)}
+        cmd.update(options)
+        await _phone_command(cmd)
 
 
 async def _unsubscribe(client: Client, sensor: str) -> None:
@@ -139,10 +157,11 @@ async def _unsubscribe(client: Client, sensor: str) -> None:
     if not subs:
         del subscribers[sensor]
         stream_intervals.pop(sensor, None)
+        stream_options.pop(sensor, None)
         if sensor.startswith("hub:"):
             await _hub_command(f"hub:stream:stop:{sensor[4:]}")
         else:
-            await _phone_command(f"stop_{sensor}")
+            await _phone_command({"action": "stop", "sensor": sensor})
         log.info("Stopped %s stream (no subscribers)", sensor)
 
 
@@ -153,7 +172,7 @@ async def _cleanup_subscriptions(client: Client) -> None:
 
 
 async def handle_client(websocket: websockets.ServerConnection) -> None:
-    global hub_connected, phone_connected, bridge_client, hub_battery_cache
+    global hub_connected, phone_connected, bridge_client, hub_battery_cache, phone_manifest_cache
     addr = websocket.remote_address
     log.info("Client connected: %s", addr)
     client = Client(websocket)
@@ -167,6 +186,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             "hub_connected": hub_connected,
             "phone_connected": phone_connected,
         }))
+        if phone_manifest_cache:
+            client.send(phone_manifest_cache)
         for cached in phone_state_cache.values():
             client.send(cached)
         if hub_battery_cache:
@@ -195,10 +216,13 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             if msg.get("type") == "phone_connected":
                 phone_connected = True
                 bridge_client = client
-                log.info("Phone connected (bridge: %s)", client.label())
-                broadcast = json.dumps({"type": "phone_connected"})
+                phone_manifest_cache = raw
+                hw = msg.get("hardware", {})
+                log.info("Phone connected (bridge: %s) device=%s os=%s gps=%s compass=%s barometer=%s cameras=%s",
+                         client.label(), msg.get("device", "?"), msg.get("os", "?"),
+                         hw.get("gps"), hw.get("compass"), hw.get("barometer"), hw.get("cameras"))
                 for c in (connected_clients - {client}):
-                    c.send(broadcast)
+                    c.send(raw)
                 await _recover_phone_subscriptions()
                 continue
 
@@ -232,7 +256,8 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 sensor = msg.get("sensor", "")
                 interval = max(10, int(msg.get("interval", 100)))
                 if sensor:
-                    await _subscribe(client, sensor, interval)
+                    options = {k: v for k, v in msg.items() if k not in ("type", "sensor", "interval")}
+                    await _subscribe(client, sensor, interval, options or None)
                 continue
 
             if msg.get("type") == "unsubscribe":
@@ -305,6 +330,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             bridge_client = None
             phone_connected = False
             hub_connected = False
+            phone_manifest_cache = None
             for c in connected_clients.copy():
                 c.send(json.dumps({"type": "hub_disconnected"}))
                 c.send(json.dumps({"type": "phone_disconnected"}))
