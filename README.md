@@ -51,3 +51,4 @@ Connect any WebSocket client to `ws://<server-ip>:8765/` to receive hub events:
 ```json
 {"type": "hub_stdout", "data": "button:1"}
 ```
+
