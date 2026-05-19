@@ -16,43 +16,68 @@ import os
 import anthropic
 
 TASK = """\
-You are testing connectivity to a local LEGO hub platform running on this machine.
-Run each step in order using bash. Report the result, then move to the next step.
+You have access to a LEGO Inventor Hub connected via a WebSocket server running
+on this machine at ws://localhost:8765/.
 
-STEP 1 — is the control port reachable?
-  nc -z -w2 localhost 8766 && echo PORT_OPEN || echo PORT_CLOSED
+Your goal: discover what hardware is connected, then design and implement a
+real-time control loop that maps some input to some output using what you find.
 
-STEP 2 — does the WebSocket server accept connections?
-  python3 -c "
-import asyncio, sys
-try:
-    import websockets
-except ImportError:
-    print('websockets not installed'); sys.exit(1)
-async def t():
-    async with websockets.connect('ws://localhost:8765/') as ws:
-        msg = await asyncio.wait_for(ws.recv(), timeout=3)
-        print('RECEIVED:', msg[:120])
-asyncio.run(t())
-"
+## Protocol
 
-STEP 3 — read hub battery voltage (only if step 2 succeeded)
-  python3 -c "
-import asyncio, json, websockets
-async def t():
-    async with websockets.connect('ws://localhost:8765/') as ws:
-        await ws.recv()  # hello
-        await ws.send(json.dumps({'target': 'hub', 'data': 'hub:battery:voltage'}))
-        for _ in range(15):
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
-            if msg.get('type') == 'hub_stdout' and 'voltage' in msg.get('data', ''):
-                print('VOLTAGE:', msg['data'])
-                return
-        print('NO_VOLTAGE_RESPONSE')
-asyncio.run(t())
-"
+Connect with websockets (pip install if needed). The first message is a JSON
+hello with hub_connected, phone_connected, etc.
 
-Report your findings clearly for each step.
+Send commands as JSON: {"target": "hub", "data": "COMMAND"}
+Hub responds with {"type": "hub_stdout", "data": ">RESPONSE"}
+
+Useful discovery commands:
+  exec:print(">motors:" + str(list(motors.keys())))
+  exec:print(">sensors:" + str(list(sensors.keys())))
+  hub:imu:tilt          -> >hub:imu:tilt:pitch=F:roll=F
+  hub:battery:voltage   -> >hub:battery:voltage=INT
+
+Motor commands:
+  motor:PORT:run:SPEED           non-blocking (SPEED deg/s)
+  motor:PORT:run:SPEED:DURATION  blocking with duration ms
+  motor:PORT:stop
+  motor:PORT:angle               -> >motor:PORT:angle=INT
+
+Sensor commands:
+  sensor:PORT:distance    -> >sensor:PORT:distance=INT  (mm; 2000=nothing)
+  sensor:PORT:color       -> >sensor:PORT:color=Color.NAME
+  sensor:PORT:reflection  -> >sensor:PORT:reflection=INT (0-100)
+
+Hub light/sound:
+  hub:light:on:COLOR    (RED/GREEN/BLUE/YELLOW/ORANGE/CYAN/WHITE)
+  hub:speaker:beep:HZ:MS
+
+Exec arbitrary Python on hub:
+  exec:EXPRESSION  -> print() output then >exec:ok or >exec:error:MSG
+  Note: print() output only forwarded if the string starts with ">"
+
+Helper to send a command and collect response lines until a terminal marker:
+
+  async def send_cmd(ws, cmd, timeout=5):
+      await ws.send(json.dumps({"target": "hub", "data": cmd}))
+      lines = []
+      while True:
+          msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+          if msg.get("type") == "hub_stdout":
+              data = msg["data"]
+              lines.append(data)
+              if any(data.startswith(p) for p in [">exec:", ">error:", ">motor:", ">sensor:", ">hub:"]):
+                  break
+      return lines
+
+## Your task
+
+1. Connect and discover what is plugged in (motors, sensors).
+2. Based on what is available, pick an interesting input->output mapping.
+3. Write a Python control script to a file and run it for ~15 seconds.
+4. Clean up (stop motors if any were running).
+5. Report: what you found, what you built, and what you observed on the hardware.
+
+All logic runs locally via websockets — no deployment needed.
 """
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "error", "terminated"}
