@@ -63,7 +63,7 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if #available(iOS 14.0, *) { visionCaps.append("pose") }
         if #available(iOS 15.0, *) { visionCaps.append("hand_pose") }
 
-        let locStatus = CLLocationManager.authorizationStatus()
+        let locStatus = locationManager.authorizationStatus
         let locPermission: String
         switch locStatus {
         case .authorizedAlways, .authorizedWhenInUse: locPermission = "authorized"
@@ -376,6 +376,12 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Vision
 
+    // Vision uses bottom-left origin; flip to top-left. Use maxY before flipping because
+    // the box's top edge (screen) is its maxY in Vision coords.
+    private func visionBBox(_ b: CGRect) -> [String: Any] {
+        ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height]
+    }
+
     private func runSaliency(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
         let request = VNGenerateAttentionBasedSaliencyImageRequest()
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
@@ -390,10 +396,9 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if let salientObjects = result.salientObjects {
             for obj in salientObjects {
                 let b = obj.boundingBox
-                // Vision uses bottom-left origin; convert to top-left for agent convenience
                 objects.append([
                     "confidence": obj.confidence,
-                    "bbox": ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
+                    "bbox": visionBBox(b),
                 ])
             }
         }
@@ -522,11 +527,10 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         for obs in (request.results ?? []) {
             guard let top = obs.topCandidates(1).first else { continue }
             let b = obs.boundingBox
-            // Vision uses bottom-left origin; convert to top-left for agent convenience
             texts.append([
                 "text":       top.string,
                 "confidence": top.confidence,
-                "bbox":       ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
+                "bbox":       visionBBox(b),
             ])
         }
 
@@ -554,11 +558,10 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         var animals: [[String: Any]] = []
         for obs in (request.results ?? []) {
             let b = obs.boundingBox
-            // Vision uses bottom-left origin; convert to top-left for agent convenience
             animals.append([
                 "labels":     obs.labels.map { ["identifier": $0.identifier, "confidence": $0.confidence] },
                 "confidence": obs.confidence,
-                "bbox":       ["x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height],
+                "bbox":       visionBBox(b),
             ])
         }
 
