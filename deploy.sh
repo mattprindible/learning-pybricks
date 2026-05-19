@@ -60,8 +60,79 @@ except Exception:
 
     elapsed=$(( $(date +%s) - start_ts ))
     log "server:ok pid=$(cat $PID_FILE) elapsed=${elapsed}s"
+}
 
-    uv run python wait_ready.py
+# ---------------------------------------------------------------------------
+# hub_deploy — release BLE, upload main.py via pybricksdev.
+# ---------------------------------------------------------------------------
+hub_deploy() {
+    local start_ts elapsed
+    start_ts=$(date +%s)
+
+    log "hub:disconnect"
+    python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(3)
+try:
+    s.connect(('localhost', $CONTROL_PORT))
+    s.sendall(b'hub_disconnect\n')
+    s.recv(16)
+    s.close()
+except Exception as e:
+    print(f'DEPLOY:hub:error reason=SERVER_NOT_REACHABLE detail={e}')
+    sys.exit(1)
+"
+    sleep 3
+
+    log "hub:upload"
+    if ! uv run pybricksdev run ble --no-start main.py; then
+        log "hub:error reason=PYBRICKSDEV_FAILED"
+        exit 1
+    fi
+
+    elapsed=$(( $(date +%s) - start_ts ))
+    log "hub:ok elapsed=${elapsed}s"
+}
+
+# ---------------------------------------------------------------------------
+# ios_deploy — build, install, and launch the iOS app.
+# ---------------------------------------------------------------------------
+ios_deploy() {
+    local start_ts elapsed
+
+    start_ts=$(date +%s)
+    log "ios:build"
+    if ! xcodebuild \
+        -project "$PROJECT" \
+        -scheme bricks \
+        -configuration Debug \
+        -destination "id=$DEVICE" \
+        -derivedDataPath "$DERIVED" \
+        build 2>&1 | grep -E "error:|BUILD"; then
+        log "ios:error reason=XCODEBUILD_FAILED"
+        exit 1
+    fi
+    elapsed=$(( $(date +%s) - start_ts ))
+    log "ios:build:ok elapsed=${elapsed}s"
+
+    log "ios:install"
+    if ! xcrun devicectl device install app --device "$DEVICE" "$APP" \
+        2>&1 | grep -v "provisioning"; then
+        log "ios:error reason=INSTALL_FAILED"
+        exit 1
+    fi
+
+    log "ios:launch"
+    if ! xcrun devicectl device process launch \
+        --device "$DEVICE" \
+        "$BUNDLE" 2>&1 | grep -v "provisioning"; then
+        log "ios:error reason=LAUNCH_FAILED"
+        exit 1
+    fi
+
+    elapsed=$(( $(date +%s) - start_ts ))
+    log "ios:ok elapsed=${elapsed}s"
 }
 
 # ---------------------------------------------------------------------------
@@ -69,49 +140,33 @@ except Exception:
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--restart-server" ]]; then
     server_restart
+    uv run python wait_ready.py
+    exit 0
+fi
+
+if [[ "${1:-}" == "--hub" ]]; then
+    hub_deploy
+    uv run python wait_ready.py
+    exit 0
+fi
+
+if [[ "${1:-}" == "--ios" ]]; then
+    ios_deploy
+    uv run python wait_ready.py
     exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# Full deploy (existing flow, unchanged for now)
+# Full deploy
 # ---------------------------------------------------------------------------
-echo "==> Sending hub_disconnect via control port..."
-python3 -c "
-import socket, sys
-try:
-    s = socket.socket()
-    s.settimeout(3)
-    s.connect(('localhost', 8766))
-    s.sendall(b'hub_disconnect\n')
-    s.recv(16)
-    s.close()
-    print('hub_disconnect sent')
-except Exception as e:
-    print(f'WARNING: server.py not reachable ({e})', file=sys.stderr)
-    print('WARNING: hub may still be BLE-connected — pybricksdev will likely fail', file=sys.stderr)
-    print('Run: uv run python server.py', file=sys.stderr)
-" || true
-sleep 3
+CHANGED="${DEPLOY_CHANGED:-all}"
+START_TS=$(date +%s)
+log "start changed=$CHANGED"
 
-echo "==> Uploading hub program..."
-uv run pybricksdev run ble --no-start main.py
+server_restart
+hub_deploy
+ios_deploy
+uv run python wait_ready.py
 
-echo "==> Building..."
-xcodebuild \
-  -project "$PROJECT" \
-  -scheme bricks \
-  -configuration Debug \
-  -destination "id=$DEVICE" \
-  -derivedDataPath "$DERIVED" \
-  build | grep -E "error:|BUILD"
-
-echo "==> Installing..."
-xcrun devicectl device install app --device "$DEVICE" "$APP" \
-  2>&1 | grep -v "provisioning"
-
-echo "==> Launching..."
-xcrun devicectl device process launch \
-  --device "$DEVICE" \
-  "$BUNDLE" 2>&1 | grep -v "provisioning"
-
-echo "==> Done."
+ELAPSED=$(( $(date +%s) - START_TS ))
+log "success elapsed=${ELAPSED}s"
