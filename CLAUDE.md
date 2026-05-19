@@ -186,6 +186,18 @@ camera (pose)     → {"type": "phone_hardware", "sensor": "camera", "mode": "po
                      — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "pose"}
                      — Vision human body pose (iOS 14+); joints use Vision joint name keys (VNHumanBodyPoseObservation.JointName.rawValue)
                      — only joints with confidence > 0 are included; bodies may be empty; requires iOS 14+
+
+camera (hand_pose) → {"type": "phone_hardware", "sensor": "camera", "mode": "hand_pose",
+                      "hands": [{"joints": {"wrist": {"x": F, "y": F, "confidence": F},
+                                            "indexTip": {...}, ...},
+                                  "chirality": "left"|"right"|"unknown",
+                                  "confidence": F}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "hand_pose"}
+                     — Vision hand pose (iOS 14+); up to 2 hands (maximumHandCount=2)
+                     — 21 joints per hand: wrist + 4 joints per finger (tip/DIP/PIP/MCP) + 4 thumb joints (tip/IP/MP/CMC)
+                     — chirality identifies left vs right hand; only joints with confidence > 0 included
+                     — hands may be empty when no hands visible; requires iOS 14+
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):

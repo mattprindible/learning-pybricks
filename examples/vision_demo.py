@@ -83,6 +83,18 @@ def print_frame(msg: dict, mode: str) -> None:
                   f"{len(joints)} joints  high-conf: {', '.join(present[:6])}"
                   f"{'...' if len(present) > 6 else ''}")
 
+    elif mode == "hand_pose":
+        hands = msg.get("hands", [])
+        if not hands:
+            print(f"  [{ts}ms]  (no hands)")
+            return
+        for i, hand in enumerate(hands):
+            joints = hand.get("joints", {})
+            tips = {k: v for k, v in joints.items() if "Tip" in k or k == "wrist"}
+            tip_str = "  ".join(f"{k}=({v['x']:.2f},{v['y']:.2f})" for k, v in tips.items())
+            print(f"  [{ts}ms]  hand[{i}] {hand.get('chirality')}  conf={hand['confidence']:.2f}  "
+                  f"{len(joints)} joints  {tip_str}")
+
 
 async def session(ws: websockets.ClientConnection, mode: str) -> None:
     hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
@@ -141,7 +153,7 @@ async def main(mode: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", default="saliency",
-                        choices=["raw", "saliency", "animals", "text", "pose"],
+                        choices=["raw", "saliency", "animals", "text", "pose", "hand_pose"],
                         help="Vision mode to subscribe to (default: saliency)")
     args = parser.parse_args()
     asyncio.run(main(args.mode))

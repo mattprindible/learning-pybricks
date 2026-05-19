@@ -358,6 +358,8 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             runText(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         case "pose":
             runPose(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
+        case "hand_pose":
+            runHandPose(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         default:
             guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
             events.send([
@@ -405,6 +407,54 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             "height":          height,
             "timestamp_ms":    timestampMs,
         ])
+    }
+
+    @available(iOS 14.0, *)
+    private func _runHandPose(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        let request = VNDetectHumanHandPoseRequest()
+        request.maximumHandCount = 2
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch { return }
+
+        var hands: [[String: Any]] = []
+        for obs in (request.results ?? []) {
+            var joints: [String: Any] = [:]
+            for jointName in obs.availableJointNames {
+                guard let point = try? obs.recognizedPoint(jointName), point.confidence > 0 else { continue }
+                // Vision uses bottom-left origin; convert to top-left for agent convenience
+                // JointName.rawValue is VNRecognizedPointKey; .rawValue.rawValue reaches the String
+                joints[jointName.rawValue.rawValue] = [
+                    "x": point.location.x,
+                    "y": 1 - point.location.y,
+                    "confidence": point.confidence,
+                ]
+            }
+            let chirality: String
+            switch obs.chirality {
+            case .left:  chirality = "left"
+            case .right: chirality = "right"
+            default:     chirality = "unknown"
+            }
+            hands.append(["joints": joints, "chirality": chirality, "confidence": obs.confidence])
+        }
+
+        events.send([
+            "type":         "phone_hardware",
+            "sensor":       "camera",
+            "mode":         "hand_pose",
+            "hands":        hands,
+            "width":        width,
+            "height":       height,
+            "timestamp_ms": timestampMs,
+        ])
+    }
+
+    private func runHandPose(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        if #available(iOS 14.0, *) {
+            _runHandPose(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
+        }
     }
 
     @available(iOS 14.0, *)

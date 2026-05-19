@@ -546,6 +546,35 @@ async def contract_camera_pose():
     return result
 
 
+async def contract_camera_hand_pose():
+    """
+    Vision mode (hand_pose): subscribing with mode='hand_pose' triggers
+    VNDetectHumanHandPoseRequest (iOS 14+, maximumHandCount=2). Events carry
+    hands — a list of {joints:{name:{x,y,confidence}}, chirality, confidence} —
+    one entry per detected hand. chirality identifies left vs right.
+    21 joints per hand: wrist + 4×finger (tip/DIP/PIP/MCP) + 4×thumb joints.
+    """
+    def validate(item):
+        if not isinstance(item.get("joints"), dict):
+            return f"joints not dict: {item.get('joints')!r}"
+        if item.get("chirality") not in ("left", "right", "unknown"):
+            return f"chirality not valid: {item.get('chirality')!r}"
+        if not isinstance(item.get("confidence"), (int, float)):
+            return f"confidence not numeric: {item.get('confidence')!r}"
+        for name, joint in item["joints"].items():
+            for k in ("x", "y", "confidence"):
+                if not isinstance(joint.get(k), (int, float)):
+                    return f"joint {name!r}.{k} not numeric: {joint.get(k)!r}"
+        return None
+
+    result = await _contract_camera_vision_mode("hand_pose", "hands", validate)
+    if result is True:
+        return passed(
+            "Vision hand_pose: subscribe mode='hand_pose' → hands [{joints, chirality, confidence}] (empty when no hands visible)",
+        )
+    return result
+
+
 # ── Event ─────────────────────────────────────────────────────────────────────
 
 async def contract_connectivity_event_broadcast():
@@ -784,6 +813,7 @@ async def main():
     results.append(await contract_camera_animals())
     results.append(await contract_camera_text())
     results.append(await contract_camera_pose())
+    results.append(await contract_camera_hand_pose())
 
     section("Event")
     results.append(await contract_connectivity_event_broadcast())
