@@ -163,6 +163,14 @@ camera (saliency) → {"type": "phone_hardware", "sensor": "camera", "mode": "sa
                      — Vision attention saliency; bboxes normalized 0–1, origin top-left
                      — ~3–7fps (Vision processing overhead); alwaysDiscardsLateVideoFrames=true drops extras
                      — salient_objects may be empty if nothing captures attention
+
+camera (animals)  → {"type": "phone_hardware", "sensor": "camera", "mode": "animals",
+                      "animals": [{"labels": [{"identifier": "Cat", "confidence": F}, ...],
+                                   "confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "animals"}
+                     — Vision animal recognition (iOS 13+); labels list ranked by confidence
+                     — animals may be empty if no animals detected; requires iOS 13+
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):

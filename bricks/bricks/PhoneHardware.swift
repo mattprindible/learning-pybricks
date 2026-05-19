@@ -352,7 +352,8 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         switch mode {
         case "saliency":
             runSaliency(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
-        // case "animals":  ...  (Commit 3)
+        case "animals":
+            runAnimals(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         // case "text":     ...  (Commit 4)
         // case "pose":     ...  (Commit 5)
         default:
@@ -400,6 +401,37 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             "width":           width,
             "height":          height,
             "timestamp_ms":    timestampMs,
+        ])
+    }
+
+    private func runAnimals(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        guard #available(iOS 13.0, *) else { return }
+        let request = VNRecognizeAnimalsRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return
+        }
+
+        var animals: [[String: Any]] = []
+        for obs in (request.results ?? []) {
+            let b = obs.boundingBox
+            animals.append([
+                "labels":     obs.labels.map { ["identifier": $0.identifier, "confidence": $0.confidence] },
+                "confidence": obs.confidence,
+                "bbox":       ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+            ])
+        }
+
+        events.send([
+            "type":         "phone_hardware",
+            "sensor":       "camera",
+            "mode":         "animals",
+            "animals":      animals,
+            "width":        width,
+            "height":       height,
+            "timestamp_ms": timestampMs,
         ])
     }
 
