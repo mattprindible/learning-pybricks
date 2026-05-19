@@ -150,15 +150,19 @@ motion_activity  →  {"type": "phone_hardware", "sensor": "motion_activity",
                      — fires on transition, not on a fixed interval; interval ignored
                      — requires NSMotionUsageDescription permission
 
-camera           →  {"type": "phone_hardware", "sensor": "camera",
-                      "mode": STR,                 ("raw" or Vision mode name)
-                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)  [raw mode]
-                      "width": INT, "height": INT,
-                      "timestamp_ms": INT}
-                     — never cached (STREAM_ONLY_SENSORS); interval ignored (hardware-capped at ~10fps raw)
-                     — Vision modes cap at ~3–7fps (processing overhead)
-                     — subscribe with {"type": "subscribe", "sensor": "camera", "mode": "raw"|"saliency"|...}
-                     — available modes declared in manifest vision_capabilities; default mode is "raw"
+camera (raw)     →  {"type": "phone_hardware", "sensor": "camera", "mode": "raw",
+                      "frame": STR,                (base64 JPEG, 640×480, quality 0.5)
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera"}  (mode defaults to "raw")
+                     — never cached (STREAM_ONLY_SENSORS); hardware-capped at ~10fps
+
+camera (saliency) → {"type": "phone_hardware", "sensor": "camera", "mode": "saliency",
+                      "salient_objects": [{"confidence": F, "bbox": {"x": F, "y": F, "w": F, "h": F}}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "saliency"}
+                     — Vision attention saliency; bboxes normalized 0–1, origin top-left
+                     — ~3–7fps (Vision processing overhead); alwaysDiscardsLateVideoFrames=true drops extras
+                     — salient_objects may be empty if nothing captures attention
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):

@@ -348,9 +348,10 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let timestampMs = Int64(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds * 1000)
         let mode = cameraMode
 
-        // Vision processing modes are dispatched here; all currently fall through to raw JPEG
+        // Vision processing modes are dispatched here
         switch mode {
-        // case "saliency": ...  (Commit 2)
+        case "saliency":
+            runSaliency(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         // case "animals":  ...  (Commit 3)
         // case "text":     ...  (Commit 4)
         // case "pose":     ...  (Commit 5)
@@ -366,6 +367,40 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 "timestamp_ms": timestampMs,
             ])
         }
+    }
+
+    // MARK: - Vision
+
+    private func runSaliency(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        let request = VNGenerateAttentionBasedSaliencyImageRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return
+        }
+        guard let result = request.results?.first as? VNSaliencyImageObservation else { return }
+
+        var objects: [[String: Any]] = []
+        if let salientObjects = result.salientObjects {
+            for obj in salientObjects {
+                let b = obj.boundingBox
+                objects.append([
+                    "confidence": obj.confidence,
+                    "bbox": ["x": b.minX, "y": b.minY, "w": b.width, "h": b.height],
+                ])
+            }
+        }
+
+        events.send([
+            "type":            "phone_hardware",
+            "sensor":          "camera",
+            "mode":            "saliency",
+            "salient_objects": objects,
+            "width":           width,
+            "height":          height,
+            "timestamp_ms":    timestampMs,
+        ])
     }
 
     // MARK: - Battery
