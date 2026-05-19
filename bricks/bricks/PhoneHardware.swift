@@ -356,7 +356,8 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             runAnimals(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         case "text":
             runText(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
-        // case "pose":     ...  (Commit 5)
+        case "pose":
+            runPose(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
         default:
             guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
             events.send([
@@ -403,6 +404,50 @@ class PhoneHardwareManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             "height":          height,
             "timestamp_ms":    timestampMs,
         ])
+    }
+
+    @available(iOS 14.0, *)
+    private func _runPose(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        let request = VNDetectHumanBodyPoseRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return
+        }
+
+        var bodies: [[String: Any]] = []
+        for obs in (request.results ?? []) {
+            var joints: [String: Any] = [:]
+            if let recognized = try? obs.recognizedPoints(.all) {
+                for (key, point) in recognized {
+                    if point.confidence > 0 {
+                        joints[key.rawValue] = [
+                            "x": point.location.x,
+                            "y": point.location.y,
+                            "confidence": point.confidence,
+                        ]
+                    }
+                }
+            }
+            bodies.append(["joints": joints, "confidence": obs.confidence])
+        }
+
+        events.send([
+            "type":         "phone_hardware",
+            "sensor":       "camera",
+            "mode":         "pose",
+            "bodies":       bodies,
+            "width":        width,
+            "height":       height,
+            "timestamp_ms": timestampMs,
+        ])
+    }
+
+    private func runPose(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {
+        if #available(iOS 14.0, *) {
+            _runPose(cgImage: cgImage, width: width, height: height, timestampMs: timestampMs)
+        }
     }
 
     private func runText(cgImage: CGImage, width: Int, height: Int, timestampMs: Int64) {

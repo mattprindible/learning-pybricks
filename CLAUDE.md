@@ -178,6 +178,14 @@ camera (text)     → {"type": "phone_hardware", "sensor": "camera", "mode": "te
                      — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "text"}
                      — Vision fast text recognition; texts may be empty if no text visible
                      — uses .fast recognition level (lower latency, lower accuracy than .accurate)
+
+camera (pose)     → {"type": "phone_hardware", "sensor": "camera", "mode": "pose",
+                      "bodies": [{"joints": {"left_shoulder": {"x": F, "y": F, "confidence": F}, ...},
+                                  "confidence": F}, ...],
+                      "width": INT, "height": INT, "timestamp_ms": INT}
+                     — subscribe: {"type": "subscribe", "sensor": "camera", "mode": "pose"}
+                     — Vision human body pose (iOS 14+); joints use Vision joint name keys (VNHumanBodyPoseObservation.JointName.rawValue)
+                     — only joints with confidence > 0 are included; bodies may be empty; requires iOS 14+
 ```
 
 **phone_connected manifest** (sent by iOS on every server connect; cached and replayed to late-joining agents):
