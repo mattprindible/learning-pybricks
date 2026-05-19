@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Get files changed in this commit (handle first commit with no parent)
+if git rev-parse HEAD~1 >/dev/null 2>&1; then
+    CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)
+else
+    CHANGED="main.py"  # first commit: treat as full deploy
+fi
+
+NEEDS_SERVER=false
+NEEDS_FULL=false
+
+while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    case "$file" in
+        server.py)  NEEDS_SERVER=true ;;
+        main.py)    NEEDS_FULL=true ;;
+        bricks/*)   NEEDS_FULL=true ;;
+    esac
+done <<< "$CHANGED"
+
+# Nothing deploy-relevant changed — silent exit
+$NEEDS_SERVER || $NEEDS_FULL || exit 0
+
+export DEPLOY_CHANGED
+DEPLOY_CHANGED=$(echo "$CHANGED" | grep -E '^(server\.py|main\.py|bricks/)' | tr '\n' ' ' | sed 's/ $//')
+
+if $NEEDS_FULL; then
+    exec ./deploy.sh
+else
+    exec ./deploy.sh --restart-server
+fi
