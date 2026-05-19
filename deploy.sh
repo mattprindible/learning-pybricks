@@ -8,9 +8,24 @@ APP="$DERIVED/Build/Products/Debug-iphoneos/bricks.app"
 BUNDLE="haha.computer.bricks"
 PID_FILE=".server.pid"
 SERVER_LOG="server.log"
+LOCK_FILE=".deploy-lock"
 CONTROL_PORT=8766
 
 log() { echo "DEPLOY:$*"; }
+
+acquire_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local holder
+        holder=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+            log "error reason=DEPLOY_ALREADY_RUNNING pid=$holder hint=another_deploy_is_in_progress"
+            exit 1
+        fi
+        log "warning reason=STALE_LOCK_CLEARED pid=$holder"
+    fi
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+}
 
 # ---------------------------------------------------------------------------
 # server_restart — stop running server via PID file, start fresh, poll ready.
@@ -148,18 +163,21 @@ ios_install_launch() {
 # Entry points
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--restart-server" ]]; then
+    acquire_lock
     server_restart
     uv run python wait_ready.py
     exit 0
 fi
 
 if [[ "${1:-}" == "--hub" ]]; then
+    acquire_lock
     hub_deploy
     uv run python wait_ready.py
     exit 0
 fi
 
 if [[ "${1:-}" == "--ios" ]]; then
+    acquire_lock
     ios_build
     ios_install_launch
     uv run python wait_ready.py
@@ -170,6 +188,7 @@ fi
 # Full deploy — build iOS first (hub BLE still held), then hub upload,
 # then install+launch (hub idle only for the short ~5s install window).
 # ---------------------------------------------------------------------------
+acquire_lock
 CHANGED="${DEPLOY_CHANGED:-all}"
 START_TS=$(date +%s)
 log "start changed=$CHANGED"
