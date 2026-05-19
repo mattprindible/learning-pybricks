@@ -6,18 +6,20 @@ Subscribes to one camera Vision mode and pretty-prints every frame.
 Point the phone at whatever the mode is designed to detect.
 
 Usage:
-  uv run python examples/vision_demo.py                  # saliency (default)
+  uv run python examples/vision_demo.py                       # saliency (default)
   uv run python examples/vision_demo.py --mode animals
   uv run python examples/vision_demo.py --mode text
   uv run python examples/vision_demo.py --mode pose
-  uv run python examples/vision_demo.py --mode raw       # raw JPEG size
+  uv run python examples/vision_demo.py --mode hand_pose
+  uv run python examples/vision_demo.py --mode raw            # raw JPEG size
 
 Available modes (declared in manifest vision_capabilities):
-  saliency  — attention hotspots with bounding boxes
-  animals   — detected animals with species labels
-  text      — recognized text strings with locations
-  pose      — human body joint positions (19 COCO keypoints)
-  raw       — JPEG frame size/dimensions only (no Vision processing)
+  saliency   — attention hotspots with bounding boxes
+  animals    — detected animals with species labels
+  text       — recognized text strings with locations
+  pose       — human body joint positions (19 COCO keypoints)
+  hand_pose  — hand skeleton with chirality (21 joints per hand, up to 2 hands)
+  raw        — JPEG frame size/dimensions only (no Vision processing)
 
 Ctrl-C to exit cleanly.
 """

@@ -13,7 +13,7 @@ The six sections correspond to the bus message taxonomy:
   Bus           — connection protocol, transport envelope, crash recovery
   Query         — request → single structured response (sensor reads, exec with terminal marker)
   Command       — request → hardware side effect + acknowledgement
-  Stream        — subscribe → periodic frames → unsubscribe (hub sensors, camera)
+  Stream        — subscribe → periodic frames → unsubscribe (hub sensors, camera + Vision modes)
   Event         — state change → immediate push to all clients
   Announcement  — system-level, server-cached, replayed on connect (battery, hardware state)
 

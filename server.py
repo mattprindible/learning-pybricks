@@ -218,9 +218,9 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                 bridge_client = client
                 phone_manifest_cache = raw
                 hw = msg.get("hardware", {})
-                log.info("Phone connected (bridge: %s) device=%s os=%s gps=%s lidar=%s cameras=%s",
+                log.info("Phone connected (bridge: %s) device=%s os=%s gps=%s compass=%s barometer=%s cameras=%s",
                          client.label(), msg.get("device", "?"), msg.get("os", "?"),
-                         hw.get("gps"), hw.get("lidar"), hw.get("cameras"))
+                         hw.get("gps"), hw.get("compass"), hw.get("barometer"), hw.get("cameras"))
                 for c in (connected_clients - {client}):
                     c.send(raw)
                 await _recover_phone_subscriptions()

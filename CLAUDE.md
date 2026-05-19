@@ -224,6 +224,8 @@ camera (hand_pose) → {"type": "phone_hardware", "sensor": "camera", "mode": "h
 
 **Adding a new phone sensor**: add a `("start"|"stop", "sensor_name")` case to `handleCommand` in `PhoneHardware.swift` and emit `phone_hardware` events. No server changes needed. For sensors that should never be cached as snapshots (high-frequency, always-stale data), add to `STREAM_ONLY_SENSORS` in `server.py`.
 
+**Adding a new Vision camera mode**: add a `case "mode_name":` branch to the `switch mode` in `captureOutput` in `PhoneHardware.swift`, implement a `private func runModeName(cgImage:width:height:timestampMs:)` method using the appropriate `VNRequest` subclass, and emit a `phone_hardware` event with `"mode": "mode_name"` and your payload key. Bounding boxes and joint positions should be flipped to top-left origin (`y = 1 - vision_y` for points, `y = 1 - b.maxY` for boxes). No server changes needed — the mode is forwarded via subscribe options.
+
 ## Hub command protocol
 
 `main.py` accepts commands via stdin and responds via stdout. Commands are colon-delimited; responses are prefixed with `>`.
@@ -439,10 +441,12 @@ examples/
   agent_template.py                  Demonstrates all 7 agent contract points
   tilt_drive.py                      iPhone tilt → motor speed control script
   battery_light.py                   iPhone battery state → hub light color
+  compass_light.py                   Phone heading → hub status light color (manifest-first pattern)
   control.py                         Basic hub control example
   control_exec.py                    Exec-based control example
   diagnose.py                        Hardware diagnostic script
   proximity_light.py                 Camera JPEG size → hub light proximity indicator
+  vision_demo.py                     Live Vision framework output — run with --mode saliency|animals|text|pose|hand_pose
 scratch/
   explore_*.py                       Exploratory one-off scripts (not tests)
 bricks/bricks/
