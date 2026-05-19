@@ -7,6 +7,10 @@ wheels/
 *.egg-info
 .venv
 
+# Server runtime artifacts
+.server.pid
+server.log
+
 # Xcode user data (per-developer, changes constantly)
 *.xcuserstate
 xcuserdata/
