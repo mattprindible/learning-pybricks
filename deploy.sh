@@ -178,6 +178,58 @@ ios_install_launch() {
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--stop" ]]; then
+    if [[ ! -f "$PID_FILE" ]]; then
+        log "server:stop skipped reason=NOT_RUNNING"
+        exit 0
+    fi
+
+    pid=$(cat "$PID_FILE")
+    if ! kill -0 "$pid" 2>/dev/null; then
+        log "server:stop skipped reason=PROCESS_GONE pid=$pid"
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+
+    speak_wait "Shutting down"
+    log "server:stop pid=$pid"
+    kill -TERM "$pid"
+
+    deadline=$(( $(date +%s) + 5 ))
+    while kill -0 "$pid" 2>/dev/null && [[ $(date +%s) -lt $deadline ]]; do
+        sleep 0.2
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log "server:sigkill pid=$pid"
+        kill -KILL "$pid" 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    rm -f "$PID_FILE"
+
+    # Verify port is actually free
+    if python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(('localhost', $CONTROL_PORT))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        log "server:error reason=PORT_STILL_BOUND hint=check_for_zombie_process"
+        speak "Shutdown failed. port still bound"
+        exit 1
+    fi
+
+    log "server:stopped pid=$pid"
+    speak "Server stopped"
+    exit 0
+fi
+
 if [[ "${1:-}" == "--restart-server" ]]; then
     acquire_lock
     speak_wait "${DEPLOY_MESSAGE:-Restarting server}"
