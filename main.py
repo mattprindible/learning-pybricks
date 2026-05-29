@@ -361,10 +361,23 @@ async def stdin_loop():
             if buf:
                 cmd = str(buf, "utf-8").strip()
                 buf = bytearray()
+                # Optional correlation prefix "@<id>:<command>". The server tags every
+                # command so it can route the response back to the originating agent.
+                # Commands without the prefix (e.g. hub:handshake from iOS) run as before.
+                cmd_id = None
+                if cmd.startswith("@"):
+                    sep = cmd.find(":")
+                    if sep != -1:
+                        cmd_id = cmd[1:sep]
+                        cmd = cmd[sep + 1:]
                 try:
                     await dispatch(cmd)
                 except Exception as e:
                     print(">error:exception:" + str(e))
+                # Terminal boundary so the server knows this command's output is complete,
+                # regardless of how many lines dispatch emitted. Only sent for tagged commands.
+                if cmd_id is not None:
+                    print(">end:" + cmd_id)
         else:
             buf.append(b)
 

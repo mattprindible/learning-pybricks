@@ -1,9 +1,11 @@
 import asyncio
+import itertools
 import json
 import logging
 import os
 import signal
 import socket
+from collections import deque
 from pathlib import Path
 
 import websockets
@@ -86,6 +88,14 @@ class Client:
 
 
 connected_clients: set[Client] = set()
+# Monotonic command id generator and FIFO of in-flight hub commands awaiting their
+# >end marker. The hub processes one command at a time and emits responses in order,
+# so the head of this queue is always the command currently producing output. Each
+# entry is (id, originator) where originator is the agent Client that sent the command,
+# or None for server-internal commands (acks dropped). This is what gives each agent
+# exactly its own responses instead of the broadcast bleed.
+_cmd_seq = itertools.count(1)
+pending_commands: deque[tuple[str, "Client | None"]] = deque()
 # sensor name → set of subscribed clients; key present only while at least one subscriber exists
 subscribers: dict[str, set[Client]] = {}
 # active stream interval (ms) per sensor; tracks the fastest rate any subscriber has requested
@@ -118,10 +128,26 @@ async def _recover_phone_subscriptions() -> None:
             log.info("Recovered phone stream subscription: %s at %dms", sensor, interval)
 
 
+async def _send_hub(command: str, originator: "Client | None") -> None:
+    """Tag a hub command with a correlation id, record its originator, and send it to
+    the bridge. The hub echoes >end:<id> when done so we can route the in-between
+    response lines to `originator` only. originator=None marks a server-internal
+    command whose acks are dropped."""
+    cmd_id = str(next(_cmd_seq))
+    pending_commands.append((cmd_id, originator))
+    msg = json.dumps({"target": "hub", "data": "@" + cmd_id + ":" + command})
+    if bridge_client is not None:
+        bridge_client.send(msg)
+    else:
+        # No known bridge yet — best-effort broadcast (only the bridge acts on target:hub)
+        for c in connected_clients.copy():
+            c.send(msg)
+
+
 async def _hub_command(command: str) -> None:
-    msg = json.dumps({"target": "hub", "data": command})
-    for c in connected_clients.copy():
-        c.send(msg)
+    # Server-internal command (stream control, battery poll). Responses are routed to
+    # originator=None and dropped — they were never meant for agents.
+    await _send_hub(command, None)
 
 
 async def _subscribe(client: Client, sensor: str, interval: int = 100, options: dict | None = None) -> None:
@@ -232,6 +258,9 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
 
             if msg.get("type") == "hub_connected":
                 hub_connected = True
+                # Hub (re)started: any in-flight commands are void — clear the FIFO so
+                # their never-arriving >end markers can't mis-attribute future responses.
+                pending_commands.clear()
                 if bridge_client is None:
                     bridge_client = client
                     phone_connected = True
@@ -270,6 +299,11 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                     await _unsubscribe(client, sensor)
                 continue
 
+            # Agent → hub command. Tag it so the response routes back to this client only.
+            if msg.get("target") == "hub" and "data" in msg:
+                await _send_hub(str(msg["data"]), client)
+                continue
+
             # hub_stdout >stream: lines — parse and route to hub: subscribers
             if msg.get("type") == "hub_stdout":
                 data = msg.get("data", "")
@@ -306,6 +340,34 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                         c.send(raw_json)
                     continue
 
+                # >end:<id> — terminal marker for a correlated command. Consume it
+                # (never forwarded) and advance the in-flight FIFO.
+                if data.startswith(">end:"):
+                    end_id = data[5:]
+                    if pending_commands and pending_commands[0][0] == end_id:
+                        pending_commands.popleft()
+                    else:
+                        # Defensive: the hub is serial so the head should always match.
+                        for entry in list(pending_commands):
+                            if entry[0] == end_id:
+                                pending_commands.remove(entry)
+                                break
+                        log.warning("Unexpected >end:%s (head=%s)", end_id,
+                                    pending_commands[0][0] if pending_commands else None)
+                    continue
+
+                # Any other hub line during an in-flight command is that command's
+                # response — route to its originator only (None = server-internal, drop).
+                if pending_commands:
+                    originator = pending_commands[0][1]
+                    if originator is not None:
+                        originator.send(raw)
+                    continue
+                # No in-flight command: unsolicited hub output (startup banner, etc.) — broadcast.
+                for c in (connected_clients - {client}):
+                    c.send(raw)
+                continue
+
             # phone_hardware: cache latest state, then route to subscribers or broadcast
             if msg.get("type") == "phone_hardware":
                 sensor = msg.get("sensor", "")
@@ -335,6 +397,7 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
             phone_connected = False
             hub_connected = False
             phone_manifest_cache = None
+            pending_commands.clear()
             for c in connected_clients.copy():
                 c.send(json.dumps({"type": "hub_disconnected"}))
                 c.send(json.dumps({"type": "phone_disconnected"}))

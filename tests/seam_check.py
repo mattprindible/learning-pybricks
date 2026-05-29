@@ -780,6 +780,70 @@ async def contract_connectivity_state():
     )
 
 
+# ── Command isolation ──────────────────────────────────────────────────────────
+
+async def contract_command_isolation():
+    """
+    Isolation pattern: each agent receives only the responses to its own hub commands.
+    The server tags every hub-bound command with a correlation id (@<id>: prefix) and
+    routes the response lines back to the originating client until the hub emits its
+    >end:<id> terminal marker. Two agents issuing distinct commands concurrently must
+    each see their own response and never the other's — without correlation, hub stdout
+    fans out to all clients and an agent reading 'the next > line' gets a foreign reply.
+    """
+    try:
+        async with websockets.connect(WS_URL) as a, websockets.connect(WS_URL) as b:
+            await asyncio.wait_for(a.recv(), timeout=5)  # hello
+            await asyncio.wait_for(b.recv(), timeout=5)  # hello
+            await a.send(json.dumps({"type": "register", "name": "iso-A", "description": "isolation test"}))
+            await b.send(json.dumps({"type": "register", "name": "iso-B", "description": "isolation test"}))
+
+            a_lines: list[str] = []
+            b_lines: list[str] = []
+
+            async def collect(ws, sink, seconds=2.0):
+                deadline = asyncio.get_event_loop().time() + seconds
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        return
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        return
+                    m = json.loads(raw)
+                    if m.get("type") == "hub_stdout":
+                        sink.append(m.get("data", ""))
+
+            # Fire both at once: A reads heading, B reads voltage.
+            await a.send(json.dumps({"target": "hub", "data": "hub:imu:heading"}))
+            await b.send(json.dumps({"target": "hub", "data": "hub:battery:voltage"}))
+            await asyncio.gather(collect(a, a_lines), collect(b, b_lines))
+
+            a_own = [l for l in a_lines if l.startswith(">hub:imu:heading")]
+            a_foreign = [l for l in a_lines if l.startswith(">hub:battery:voltage")]
+            b_own = [l for l in b_lines if l.startswith(">hub:battery:voltage")]
+            b_foreign = [l for l in b_lines if l.startswith(">hub:imu:heading")]
+
+            if not a_own:
+                return failed("command isolation", f"agent A never got its own response: {a_lines}")
+            if not b_own:
+                return failed("command isolation", f"agent B never got its own response: {b_lines}")
+            if a_foreign:
+                return failed("command isolation", f"agent A received B's response (bleed): {a_foreign}")
+            if b_foreign:
+                return failed("command isolation", f"agent B received A's response (bleed): {b_foreign}")
+
+            return passed(
+                "Isolation pattern: concurrent agents each receive only their own hub responses — @id correlation routing, no cross-agent bleed",
+                f"A: {len(a_own)} own / {len(a_foreign)} foreign   B: {len(b_own)} own / {len(b_foreign)} foreign",
+            )
+    except OSError as e:
+        return failed("command isolation", f"connection failed: {e}")
+    except asyncio.TimeoutError:
+        return failed("command isolation", "timed out")
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -806,6 +870,9 @@ async def main():
     except OSError as e:
         print(f"\nCannot connect to {WS_URL}: {e}\nIs server.py running?")
         sys.exit(1)
+
+    section("Command isolation")
+    results.append(await contract_command_isolation())
 
     results.append(await contract_camera_stream())
     results.append(await contract_camera_not_cached())
