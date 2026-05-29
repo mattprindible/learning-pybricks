@@ -340,6 +340,16 @@ async def handle_client(websocket: websockets.ServerConnection) -> None:
                         c.send(raw_json)
                     continue
 
+                # Stream lifecycle confirmations are responses to server-internal
+                # (originator=None) subscribe/unsubscribe commands, so the FIFO routing
+                # below would drop them. They are part of the stream contract, so
+                # broadcast them like the other special-cased hub lines. The trailing
+                # >end marker for the same command still pops the FIFO normally.
+                if data.startswith(">hub:stream:started:") or data.startswith(">hub:stream:stopped:"):
+                    for c in (connected_clients - {client}):
+                        c.send(raw)
+                    continue
+
                 # >end:<id> — terminal marker for a correlated command. Consume it
                 # (never forwarded) and advance the in-flight FIFO.
                 if data.startswith(">end:"):
